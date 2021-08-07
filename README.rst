@@ -10,6 +10,8 @@ discord.py-self
 
 A modern, easy to use, feature-rich, and async ready API wrapper for Discord's user API written in Python.
 
+The only change in this branch is a rename of the import to *selfcord* to make people that want to use both libs at the same time happy.
+
 Fork Changes
 ------------
 

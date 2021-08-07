@@ -28,7 +28,7 @@ import itertools
 import copy
 import functools
 import re
-import discord.utils
+from selfcord import utils
 
 from .core import Group, Command
 from .errors import CommandError
@@ -608,7 +608,7 @@ class HelpCommand:
         """
 
         as_lengths = (
-            discord.utils._string_width(c.name)
+            utils._string_width(c.name)
             for c in commands
         )
         return max(as_lengths, default=0)
@@ -851,7 +851,7 @@ class HelpCommand:
         if cog is not None:
             return await self.send_cog_help(cog)
 
-        maybe_coro = discord.utils.maybe_coroutine
+        maybe_coro = utils.maybe_coroutine
 
         # If it's not a cog then it's a command.
         # Since we want to have detailed errors when someone
@@ -972,7 +972,7 @@ class DefaultHelpCommand(HelpCommand):
         self.paginator.add_line(heading)
         max_size = max_size or self.get_max_size(commands)
 
-        get_width = discord.utils._string_width
+        get_width = utils._string_width
         for command in commands:
             name = command.name
             width = max_size - (get_width(name) - len(name))

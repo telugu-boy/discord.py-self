@@ -6,7 +6,7 @@ with open('requirements.txt') as f:
   requirements = f.read().splitlines()
 
 version = ''
-with open('discord/__init__.py') as f:
+with open('selfcord/__init__.py') as f:
     version = re.search(r'^__version__\s*=\s*[\'"]([^\'"]*)[\'"]', f.read(), re.MULTILINE).group(1)
 
 if not version:
@@ -50,7 +50,7 @@ setup(name='discord.py-self',
         "Issue tracker": "https://github.com/dolfies/discord.py-self/issues",
       },
       version=version,
-      packages=['discord', 'discord.ext.commands', 'discord.ext.tasks'],
+      packages=['selfcord', 'selfcord.ext.commands', 'selfcord.ext.tasks'],
       license='MIT',
       description='A Python wrapper for the Discord API',
       long_description=readme,

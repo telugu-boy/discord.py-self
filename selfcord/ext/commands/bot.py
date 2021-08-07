@@ -32,7 +32,7 @@ import sys
 import traceback
 import types
 
-import discord
+import selfcord as discord
 
 from .core import GroupMixin
 from .view import StringView

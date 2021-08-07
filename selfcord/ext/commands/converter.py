@@ -28,7 +28,7 @@ import re
 import inspect
 import typing
 
-import discord
+import selfcord as discord
 
 from .errors import *
 
