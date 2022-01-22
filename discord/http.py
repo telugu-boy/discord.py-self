@@ -58,7 +58,7 @@ _log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from .file import File
-    from .enums import AuditLogAction, ChannelType
+    from .enums import AuditLogAction, ChannelType, PrivacyLevel, ScheduledEventEntityType, ScheduledEventStatus
     from .message import Message
     from .types import (
         appinfo,
@@ -1537,13 +1537,20 @@ class HTTPClient:
         return self.request(Route('POST', '/channels/{channel_id}/invites', channel_id=channel_id), json=payload)
 
     def get_invite(
-        self, invite_id: str, *, with_counts: bool = True, with_expiration: bool = True
+        self,
+        invite_id: str,
+        *,
+        with_counts: bool = True,
+        with_expiration: bool = True,
+        scheduled_invite_id: Snowflake = MISSING
     ) -> Response[invite.Invite]:
-        params = {
+        params: Dict[str, Snowflake] = {
             'inputValue': invite_id,
             'with_counts': str(with_counts),
             'with_expiration': str(with_expiration),
         }
+        if scheduled_invite_id is not MISSING:
+            params['guild_scheduled_invite_id'] = scheduled_invite_id
 
         return self.request(Route('GET', '/invites/{invite_id}', invite_id=invite_id), params=params)
 
@@ -1703,6 +1710,84 @@ class HTTPClient:
 
     def delete_stage_instance(self, channel_id: Snowflake, *, reason: Optional[str] = None) -> Response[None]:
         return self.request(Route('DELETE', '/stage-instances/{channel_id}', channel_id=channel_id), reason=reason)
+
+    # Scheduled events
+
+    def get_scheduled_events(self, guild_id: Snowflake, with_user_count: bool = False):
+        params = {
+            'with_user_count': str(with_user_count).lower()
+        }
+
+        return self.request(Route('GET', '/guilds/{guild_id}/scheduled-events', guild_id=guild_id), params=params)
+
+    def get_scheduled_event(
+        self, guild_id: Snowflake, event_id: Snowflake, with_user_count: bool = False
+    ):
+        params = {
+            'with_user_count': str(with_user_count).lower()
+        }
+
+        return self.request(
+            Route('GET', '/guilds/{guild_id}/scheduled-events/{event_id}', guild_id=guild_id, event_id=event_id),
+            params=params,
+        )
+
+    def create_guild_scheduled_event(
+        self,
+        guild_id: Snowflake,
+        *,
+        channel_id: Snowflake = MISSING,
+        description: Optional[str] = None,
+        location_type: ScheduledEventEntityType,
+        location: str = MISSING,
+        privacy_level: PrivacyLevel,
+    ):
+        return self.request(Route('POST', '/guilds/{guild_id}/scheduled-events', guild_id=guild_id), json=payload)
+
+    def edit_scheduled_event(
+        self, guild_id: Snowflake, event_id: Snowflake, payload: dict, reason: Optional[str] = None
+    ):
+        return self.request(
+            Route('PATCH', '/guilds/{guild_id}/scheduled-events/{event_id}', guild_id=guild_id, event_id=event_id),
+            json=payload,
+            reason=reason,
+        )
+
+    def delete_scheduled_event(self, guild_id: Snowflake, event_id: Snowflake) -> Response[None]:
+        return self.request(
+            Route('DELETE', '/guilds/{guild_id}/scheduled-events/{event_id}', guild_id=guild_id, event_id=event_id),
+        )
+
+    def get_guild_scheduled_event_users(
+        self,
+        guild_id: Snowflake,
+        event_id: Snowflake,
+        limit: int = MISSING,
+        with_member: bool = MISSING,
+        before: Snowflake = MISSING,
+        after: Snowflake = MISSING,
+    ):
+        params: Dict[str, Any] = {}
+
+        if limit is not MISSING:
+            params['limit'] = limit
+
+        if with_member is not MISSING:
+            params["with_member"] = with_member
+
+        if before is not None:
+            params["before"] = before
+
+        if after is not None:
+            params["after"] = after
+
+        route = Route(
+            method="GET",
+            path="/guilds/{guild_id}/scheduled-events/{event_id}/users",
+            guild_id=guild_id,
+            event_id=event_id,
+        )
+        return self.request(route, params=params)
 
     # Relationships
 
