@@ -24,7 +24,7 @@ FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 """
 
-import discord.abc
+from . import abc
 from .flags import PublicUserFlags
 from .utils import snowflake_time, _bytes_to_base64_data, parse_time, cached_slot_property
 from .enums import DefaultAvatar, FriendFlags, StickerAnimationOptions, Theme, UserContentFilter, RelationshipAction, RelationshipType, UserFlags, HypeSquadHouse, PremiumType, try_enum
@@ -333,7 +333,7 @@ class Profile:
     def system(self):
         return self._has_flag(UserFlags.system)
 
-_BaseUser = discord.abc.User
+_BaseUser = abc.User
 
 class BaseUser(_BaseUser):
     __slots__ = ('name', 'id', 'discriminator', 'avatar', 'bot', 'system', '_public_flags', '_state')
@@ -1028,7 +1028,7 @@ class ClientUser(BaseUser):
         """
         return self._state.http.delete_account(password)
 
-class User(BaseUser, discord.abc.Messageable):
+class User(BaseUser, abc.Messageable):
     """Represents a Discord user.
 
     .. container:: operations
