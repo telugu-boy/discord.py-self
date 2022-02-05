@@ -258,7 +258,7 @@ class Client:
         status = self.initial_status
         if status is None:
             status = getattr(state.settings, 'status', None)
-        self.loop.create_task(self.change_presence(activities=activities, status=status))
+        #self.loop.create_task(self.change_presence(activities=activities, status=status))
 
     @property
     def latency(self) -> float:
