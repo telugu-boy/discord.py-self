@@ -440,7 +440,7 @@ class Client:
         """
         await self.close()
 
-    async def connect(self, *, reconnect=True):
+    async def connect(self, *, reconnect=True, timeout=60.0):
         """|coro|
 
         Creates a websocket connection and lets the websocket listen
@@ -472,7 +472,7 @@ class Client:
         while not self.is_closed():
             try:
                 coro = DiscordWebSocket.from_client(self, **ws_params)
-                self.ws = await asyncio.wait_for(coro, timeout=60.0)
+                self.ws = await asyncio.wait_for(coro, timeout=timeout)
                 ws_params['initial'] = False
                 while True:
                     await self.ws.poll_event()
