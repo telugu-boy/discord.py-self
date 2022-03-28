@@ -25,7 +25,8 @@ DEALINGS IN THE SOFTWARE.
 from __future__ import annotations
 
 import copy
-from datetime import datetime, timedelta
+from datetime import datetime
+import logging
 import unicodedata
 from typing import (
     Any,
@@ -47,10 +48,10 @@ from . import utils, abc
 from .role import Role
 from .member import Member, VoiceState
 from .emoji import Emoji
-from .errors import InvalidData
+from .errors import ClientException, InvalidData
 from .permissions import PermissionOverwrite
 from .colour import Colour
-from .errors import InvalidArgument, ClientException
+from .errors import InvalidArgument
 from .channel import *
 from .channel import _guild_channel_factory, _threaded_guild_channel_factory
 from .enums import (
@@ -87,6 +88,8 @@ __all__ = (
 )
 
 MISSING = utils.MISSING
+
+_log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from .abc import Snowflake, SnowflakeTime
@@ -176,10 +179,6 @@ class Guild(Hashable):
         The maximum amount of presences for the guild.
     max_members: Optional[:class:`int`]
         The maximum amount of members for the guild.
-
-        .. note::
-
-            This attribute is only available via :meth:`.Client.fetch_guild`.
     max_video_channel_users: Optional[:class:`int`]
         The maximum amount of users in a video channel.
 
@@ -199,56 +198,8 @@ class Guild(Hashable):
     features: List[:class:`str`]
         A list of features that the guild has. The features that a guild can have are
         subject to arbitrary change by Discord.
-
-        They are currently as follows:
-
-        - ``ANIMATED_BANNER``: Guild can have an animated banner.
-        - ``ANIMATED_ICON``: Guild can have an animated icon.
-        - ``BANNER``: Guild can have a banner. (i.e. :attr:`.banner`)
-        - ``CHANNEL_BANNER``: Guild can have channel banners.
-        - ``COMMERCE``: Guild can sell things using store channels.
-        - ``COMMUNITY``: Guild is a community server.
-        - ``DISCOVERABLE_DISABLED``: Guild is blacklisted from Server Discovery.
-        - ``DISCOVERABLE``: Guild shows up in Server Discovery.
-        - ``ENABLED_DISCOVERABLE_BEFORE``: Guild has shown up in Server Discovery before.
-        - ``FEATURABLE``: Deprecated. Guild is able to be featured in Server Discovery.
-        - ``FORCE_RELAY``: Deprecated. Replaced by RELAY_ENABLED.
-        - ``HAS_DIRECTORY_ENTRY``: Guild is in a directory channel.
-        - ``HUB``: Guild is a student hub.
-        - ``INTERNAL_EMPLOYEE_ONLY``: Guild is only joinable by staff members.
-        - ``INVITE_SPLASH``: Guild's invite page can have a special splash.
-        - ``LURKABLE``: Deprecated. Guild is lurkable.
-        - ``MEMBER_LIST_DISABLED``: Guild's member list is hidden.
-        - ``MEMBER_PROFILES``: Guild members can have custom banners/bios.
-        - ``MEMBER_VERIFICATION_GATE_ENABLED``: Guild has Membership Screening enabled.
-        - ``MONETIZATION_ENABLED``: Guild has enabled monetization.
-        - ``MORE_EMOJI``: Guild has increased (+150) custom emoji slots.
-        - ``MORE_STICKERS``: Guild has increased (+160) custom sticker slots.
-        - ``NEWS``: Guild can create news channels.
-        - ``NEW_THREAD_PERMISSIONS``: Guild has the new thread permissions.
-        - ``PARTNERED``: Guild is a partnered server.
-        - ``PREMIUM_TIER_3_OVERRIDE``: Guild is forced to premium level 3.
-        - ``PREVIEW_ENABLED``: Guild can be viewed before being accepted via Membership Screening.
-        - ``PRIVATE_THREADS``: Guild has access to create private threads.
-        - ``PUBLIC_DISABLED``: Deprecated. Replaced by COMMUNITY.
-        - ``PUBLIC``: Deprecated. Replaced by COMMUNITY.
-        - ``RELAY_ENABLED``: Guild is sharded over multiple nodes.
-        - ``ROLE_ICONS``: Guild can use role icons.
-        - ``ROLE_SUBSCRIPTIONS_ENABLED``: Guild can manage monetized channels/roles.
-        - ``ROLE_SUBSCRIPTIONS_AVAILABLE_FOR_PURCHASE``: GUild can sell access to channels/roles.
-        - ``SEVEN_DAY_THREAD_ARCHIVE``: Guild has access to the seven day archive time for threads.
-        - ``TEXT_IN_VOICE_ENABLED``: Guild has messageable voice channels.
-        - ``THREADS_ENABLED_TESTING``: Guild has the developer thread preview turned on. Used to give access to premium thread features.
-        - ``THREADS_ENABLED``: Guild can use threads.
-        - ``THREE_DAY_THREAD_ARCHIVE``: Guild has access to the three day archive time for threads.
-        - ``TICKETED_EVENTS_ENABLED``: Guild can use ticketed events.
-        - ``VANITY_URL``: Guild can have a vanity invite URL (e.g. discord.gg/discord-api).
-        - ``VERIFIED``: Guild is a verified server.
-        - ``VIP_REGIONS``: Deprecated. Guild has VIP voice regions.
-        - ``WELCOME_SCREEN_ENABLED``: Guild has enabled the welcome screen.
-
     premium_tier: :class:`int`
-        The premium tier for this guild. Corresponds to "Nitro Server" in the official UI.
+        The premium tier for this guild. Corresponds to "Server Boost Level" in the official UI.
         The number goes from 0 to 3 inclusive.
     premium_subscription_count: :class:`int`
         The number of "boosts" this guild currently has.
@@ -320,7 +271,9 @@ class Guild(Hashable):
         '_stage_instances',
         '_threads',
         '_presence_count',
-        '_subscribing',
+        '_true_online_count',
+        '_chunked',
+        '_member_list',
     )
 
     _PREMIUM_GUILD_LIMITS: ClassVar[Dict[Optional[int], _GuildLimit]] = {
@@ -332,9 +285,11 @@ class Guild(Hashable):
     }
 
     def __init__(self, *, data: GuildPayload, state: ConnectionState):
+        self._chunked = False
         self._roles: Dict[int, Role] = {}
         self._channels: Dict[int, GuildChannel] = {}
         self._members: Dict[int, Member] = {}
+        self._member_list: List[Optional[Member]] = []
         self._voice_states: Dict[int, VoiceState] = {}
         self._threads: Dict[int, Thread] = {}
         self._stage_instances: Dict[int, StageInstance] = {}
@@ -342,13 +297,6 @@ class Guild(Hashable):
         self.notification_settings: Optional[GuildSettings] = None
         self.command_counts: Optional[CommandCounts] = None
         self._from_data(data)
-
-    # Get it running
-    @property
-    def subscribed(self):
-        return False
-    async def subscribe(self, *args, **kwargs):
-        pass
 
     def _add_channel(self, channel: GuildChannel, /) -> None:
         self._channels[channel.id] = channel
@@ -398,6 +346,7 @@ class Guild(Hashable):
         return f'<Guild {inner}>'
 
     def _update_voice_state(self, data: GuildVoiceState, channel_id: int) -> Tuple[Optional[Member], VoiceState, VoiceState]:
+        cache_flags = self._state.member_cache_flags
         user_id = int(data['user_id'])
         channel = self.get_channel(channel_id)
         try:
@@ -421,6 +370,9 @@ class Guild(Hashable):
                 member = Member(data=data['member'], state=self._state, guild=self)
             except KeyError:
                 member = None
+
+            if member is not None and cache_flags.voice:
+                self._add_member(member)
 
         return member, before, after
 
@@ -513,19 +465,21 @@ class Guild(Hashable):
         if (counts := guild.get('application_command_counts')) is not None:
             self.command_counts = CommandCounts(counts.get(0, 0), counts.get(1, 0), counts.get(2, 0))
 
-        for mdata in guild.get('merged_members', []):
-            try:
-                member = Member(data=mdata, guild=self, state=state)
-            except KeyError:
-                continue
-            self._add_member(member)
+        cache_flags = state.member_cache_flags
+        if cache_flags.other:
+            for mdata in guild.get('members', []):
+                try:
+                    member = Member(data=mdata, guild=self, state=state)
+                except KeyError:
+                    continue
+                self._add_member(member)
 
         empty_tuple = tuple()
-        for presence in guild.get('merged_presences', []):
-            user_id = int(presence['user_id'])
+        for presence in guild.get('presences', []):
+            user_id = int(presence['user']['id'])
             member = self.get_member(user_id)
             if member is not None:
-                member._presence_update(presence, empty_tuple)
+                member._presence_update(presence, empty_tuple)  # type: ignore
 
     @property
     def channels(self) -> List[GuildChannel]:
@@ -553,6 +507,10 @@ class Guild(Hashable):
             except AttributeError:
                 return len(self._members) >= 250
         return self._large
+
+    @property
+    def _offline_members_hidden(self) -> bool:
+        return self._member_count > 1000
 
     @property
     def voice_channels(self) -> List[VoiceChannel]:
@@ -927,9 +885,22 @@ class Guild(Hashable):
     @property
     def online_count(self) -> Optional[int]:
         """Optional[:class:`int`]: Returns the online member count.
-        This only exists after the first GUILD_MEMBER_LIST_UPDATE.
+
+        This is not always populated.
+
+        This is an alias of :attr:`presence_count`.
         """
-        return self._online_count
+        return self._presence_count
+
+    @property
+    def presence_count(self) -> Optional[int]:
+        """Optional[:class:`int`]: Returns the online member count.
+
+        This is not always populated.
+
+        There is an alias of this called :attr:`online_count`.
+        """
+        return self._presence_count
 
     @property
     def chunked(self) -> bool:
@@ -941,10 +912,7 @@ class Guild(Hashable):
         If this value returns ``False``, then you should request for
         offline members.
         """
-        count = getattr(self, '_member_count', None)
-        if count is None:
-            return False
-        return count == len(self._members)
+        return self._chunked
 
     @property
     def created_at(self) -> datetime:
@@ -1646,11 +1614,6 @@ class Guild(Hashable):
         .. note::
 
             This method is an API call. If you have member cache, consider :meth:`get_member` instead.
-
-        .. warning::
-
-            This API route is not used by the Discord client and may increase your chances at getting detected.
-            Consider :meth:`fetch_member_profile` instead.
 
         Parameters
         -----------
@@ -2927,41 +2890,103 @@ class Guild(Hashable):
         if description is not MISSING:
             payload['description'] = description
         if welcome_channels is not MISSING:
-            channels = [channel.to_dict() for channel in welcome_channels] if welcome_channels else []
+            channels = [channel._to_dict() for channel in welcome_channels] if welcome_channels else []
             payload['welcome_channels'] = channels
 
         if payload:
             await self._state.http.edit_welcome_screen(self.id, payload)
 
-    async def chunk(self, *, cache: bool = True) -> None:
+    async def chunk(self, channel: Snowflake = MISSING) -> List[Member]:
         """|coro|
 
-        Requests all members that belong to this guild. In order to use this,
-        you must have certain permissions.
-
+        Requests all members that belong to this guild.
         This is a websocket operation and can be slow.
 
-        .. versionadded:: 1.5
+        .. versionadded:: 2.0
+
+        .. note::
+            This can only be used on guilds with less than 1000 members.
 
         Parameters
         -----------
+        channel: :abc.Snowflake`
+            The channel to request members from.
+
+        Raises
+        -------
+        ClientException:
+            This guild cannot be chunked or chunking failed.
+            Guild is no longer available.
+
+        Returns
+        --------
+        List[:class:`Member`]
+            The members that belong to this guild.
+        """
+        if self._offline_members_hidden:
+            raise ClientException('This guild cannot be chunked.')
+        if self._state.is_guild_evicted(self):
+            raise ClientException('This guild is no longer available.')
+
+        members = await self._state.chunk_guild(self, channels=[channel])
+        if members is None:
+            raise ClientException('Chunking failed.')
+        return members  # type: ignore
+
+    async def fetch_members(
+        self,
+        channels: List[Snowflake] = MISSING,
+        *,
+        cache: bool = True,
+        force_scraping: bool = False,
+        delay: Union[int, float] = 1,
+    ) -> List[Member]:
+        """|coro|
+
+        Retrieves all members that belong to this guild.
+        This is a websocket operation and can be slow.
+
+        This does not enable you to receive events for the guild, and can be called multiple times.
+
+        .. versionadded:: 2.0
+
+        .. note::
+            If you are the owner, have either of :attr:`Permissions.adminstrator`, 
+            :attr:`Permission.kick_members`, :attr:`Permission.ban_members`, or :attr:`Permission.manage_roles`,
+            permissions will be fetched through OPcode 8 (this includes offline members).
+            Else, they will be scraped from the member sidebar.
+
+        Parameters
+        -----------
+        channels: List[:abc.Snowflake`]
+            A list of up to 5 channels to request members from. More channels make it faster.
+            This only applies when scraping from the member sidebar.
         cache: :class:`bool`
-            Whether to cache the members as well.
+            Whether to cache the members as well. The cache will not be kept updated.
+        force_scraping: :class:`bool`
+            Whether to scrape the member sidebar regardless of permissions.
+        delay: Union[:class:`int`, :class:`float`]
+            The time in seconds to wait between requests.
+            This only applies when scraping from the member sidebar.
 
         Raises
         -------
         ClientException
-            Insufficient permissions.
-        """
-        if not self.me or not any({
-            self.me.guild_permissions.kick_members,
-            self.me.guild_permissions.manage_roles,
-            self.me.guild_permissions.ban_members
-        }):
-            raise ClientException('You don\'t have permission to chunk this guild')
+            Fetching members failed.
+            Guild is no longer available.
 
-        if not self._state.is_guild_evicted(self):
-            return await self._state.chunk_guild(self, cache=cache)
+        Returns
+        --------
+        List[:class:`Member`]
+            The members that belong to this guild (offline members may not be included).
+        """
+        if self._state.is_guild_evicted(self):
+            raise ClientException('This guild is no longer available.')
+
+        members = await self._state.scrape_guild(self, cache=cache, force_scraping=force_scraping, delay=delay, channels=channels)
+        if members is None:
+            raise ClientException('Fetching members failed')
+        return members  # type: ignore
 
     async def query_members(
         self,
@@ -2971,6 +2996,7 @@ class Guild(Hashable):
         user_ids: Optional[List[int]] = None,
         presences: bool = True,
         cache: bool = True,
+        subscribe: bool = False,
     ) -> List[Member]:
         """|coro|
 
@@ -2978,6 +3004,10 @@ class Guild(Hashable):
         the query given.
 
         This is a websocket operation and can be slow.
+
+        .. note::
+            This is preferrable to using :meth:`fetch_member` as the client uses
+            it quite often, and you can also request presence.
 
         .. versionadded:: 1.3
 
@@ -2993,7 +3023,6 @@ class Guild(Hashable):
             to ``True``.
 
             .. versionadded:: 1.6
-
         cache: :class:`bool`
             Whether to cache the members internally. This makes operations
             such as :meth:`get_member` work for those that matched.
@@ -3001,13 +3030,17 @@ class Guild(Hashable):
             List of user IDs to search for. If the user ID is not in the guild then it won't be returned.
 
             .. versionadded:: 1.4
+        subscribe: :class:`bool`
+            Whether to subscribe to the resulting members. This will keep their info and presence updated.
+
+            .. versionadded:: 2.0
 
 
         Raises
         -------
         asyncio.TimeoutError
             The query timed out waiting for the members.
-        ValueError
+        InvalidArgument
             Invalid parameters were passed to the function.
 
         Returns
@@ -3015,28 +3048,25 @@ class Guild(Hashable):
         List[:class:`Member`]
             The list of members that have matched the query.
         """
-        if query is None:
-            if query == '':
-                raise ValueError('Cannot pass empty query string.')
+        if not query and not user_ids:
+            raise InvalidArgument('Must pass either query or user_ids')
 
-            if user_ids is None:
-                raise ValueError('Must pass either query or user_ids')
-
-        if user_ids is not None and query is not None:
-            raise ValueError('Cannot pass both query and user_ids')
-
-        if user_ids is not None and not user_ids:
-            raise ValueError('user_ids must contain at least 1 value')
+        if user_ids and query:
+            raise InvalidArgument('Cannot pass both query and user_ids')
 
         limit = min(100, limit or 5)
-        return await self._state.query_members(
+        members = await self._state.query_members(
             self, query=query, limit=limit, user_ids=user_ids, presences=presences, cache=cache
         )
+        if subscribe:
+            ids = [str(m.id) for m in members]
+            await self._state.ws.request_lazy_guild(self.id, members=ids)
+        return members
 
     async def change_voice_state(
         self,
         *,
-        channel: Optional[VocalGuildChannel],
+        channel: Optional[Snowflake],
         self_mute: bool = False,
         self_deaf: bool = False,
         self_video: bool = False,
@@ -3050,7 +3080,7 @@ class Guild(Hashable):
 
         Parameters
         -----------
-        channel: Optional[:class:`VoiceChannel`]
+        channel: Optional[:class:`abc.Snowflake`]
             Channel the client wants to join. Use ``None`` to disconnect.
         self_mute: :class:`bool`
             Indicates if the client should be self-muted.
@@ -3072,3 +3102,18 @@ class Guild(Hashable):
             region = str(preferred_region) if preferred_region else str(state.preferred_region)
 
         await ws.voice_state(self.id, channel_id, self_mute, self_deaf, self_video, preferred_region=region)
+
+    async def request(self, **kwargs):  # Purposefully left undocumented...
+        """|coro|
+
+        Request a guild.
+        This is required to receive most events for large guilds.
+
+        .. versionadded:: 2.0
+
+        .. note::
+            This is done automatically by default, so you do not need
+            to perform this operation unless you passed ``request_guilds=False``
+            to your :class:`Client`.
+        """
+        await self._state.request_guild(self.id, **kwargs)

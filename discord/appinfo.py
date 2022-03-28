@@ -28,7 +28,7 @@ from typing import List, TYPE_CHECKING, Optional
 
 from . import utils
 from .asset import Asset
-from .enums import ApplicationVerificationState, RPCApplicationState, StoreApplicationState, try_enum
+from .enums import ApplicationType, ApplicationVerificationState, RPCApplicationState, StoreApplicationState, try_enum
 from .flags import ApplicationFlags
 from .user import User
 
@@ -52,6 +52,21 @@ MISSING = utils.MISSING
 
 
 class ApplicationBot(User):
+    """Represents a bot attached to an application.
+
+    Attributes
+    -----------
+    application: :class:`Application`
+        The application that the bot is attached to.
+    public: :class:`bool`
+        Whether the bot can be invited by anyone or if it is locked
+        to the application owner.
+    require_code_grant: :class:`bool`
+        Whether the bot requires the completion of the full OAuth2 code
+        grant flow to join.
+    token: Optional[:class:`str`]
+        The bot's token. Only accessible when reset.
+    """
     __slots__ = ('token', 'public', 'require_code_grant')
 
     def __init__(self, *, data, state: ConnectionState, application: Application):
@@ -70,10 +85,16 @@ class ApplicationBot(User):
         ------
         HTTPException
             Resetting the token failed.
+
+        Returns
+        -------
+        :class:`str`
+            The new token.
         """
         data = await self._state.http.reset_token(self.application.id)
-        self.token = data['token']
+        self.token = token = data['token']
         self._update(data)
+        return token
 
     async def edit(
         self,
@@ -106,8 +127,8 @@ class ApplicationBot(User):
             payload['bot_require_code_grant'] = require_code_grant
 
         data = await self._state.http.edit_application(self.application.id, payload=payload)
-        self.public = data['bot_public']
-        self.require_code_grant = data['bot_require_code_grant']
+        self.public = data.get('bot_public', True)
+        self.require_code_grant = data.get('bot_require_code_grant', False)
         self.application._update(data)
 
 
@@ -148,6 +169,10 @@ class PartialApplication:
     premium_tier_level: Optional[:class:`int`]
         The required premium tier level to launch the activity.
         Only available for embedded activities.
+    type: :class:`ApplicationType`
+        The type of application.
+    tags: List[:class:`str`]
+        A list of tags that describe the application.
     """
 
     __slots__ = (
@@ -168,6 +193,7 @@ class PartialApplication:
         'type',
         'hook',
         'premium_tier_level',
+        'tags',
     )
 
     def __init__(self, *, state: ConnectionState, data: PartialAppInfoPayload):
@@ -188,13 +214,14 @@ class PartialApplication:
         self.terms_of_service_url: Optional[str] = data.get('terms_of_service_url')
         self.privacy_policy_url: Optional[str] = data.get('privacy_policy_url')
         self._flags: int = data.get('flags', 0)
-        self.type: Optional[int] = data.get('type')
+        self.type: ApplicationType = try_enum(ApplicationType, data.get('type'))
         self.hook: bool = data.get('hook', False)
         self.max_participants: Optional[int] = data.get('max_participants')
         self.premium_tier_level: Optional[int] = data.get('embedded_activity_config', {}).get('activity_premium_tier_level')
+        self.tags: List[str] = data.get('tags', [])
 
-        self.public: bool = data.get('integration_public', data.get('bot_public'))  # The two seem to be used interchangeably?
-        self.require_code_grant: bool = data.get('integration_require_code_grant', data.get('bot_require_code_grant'))  # Same here
+        self.public: bool = data.get('integration_public', data.get('bot_public', True))  # The two seem to be used interchangeably?
+        self.require_code_grant: bool = data.get('integration_require_code_grant', data.get('bot_require_code_grant', False))  # Same here
 
     def __repr__(self) -> str:
         return f'<{self.__class__.__name__} id={self.id} name={self.name!r} description={self.description!r}>'
@@ -251,8 +278,6 @@ class Application(PartialApplication):
         The application's secret key.
     redirect_uris: List[:class:`str`]
         A list of redirect URIs authorized for this application.
-    tags: List[:class:`str`]
-        A list of tags that describe the application.
     verification_state: :class:`ApplicationVerificationState`
         The verification state of the application.
     store_application_state: :class:`StoreApplicationState`
@@ -270,7 +295,6 @@ class Application(PartialApplication):
         'secret',
         'redirect_uris',
         'bot',
-        'tags',
         'verification_state',
         'store_application_state',
         'rpc_application_state',
@@ -284,7 +308,6 @@ class Application(PartialApplication):
         self.secret: str = data['secret']
         self.redirect_uris: List[str] = data.get('redirect_uris', [])
 
-        self.tags: List[str] = data.get('tags', [])
         self.guild_id: Optional[int] = utils._get_as_snowflake(data, 'guild_id')
 
         self.verification_state = try_enum(ApplicationVerificationState, data['verification_state'])
