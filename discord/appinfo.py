@@ -24,16 +24,19 @@ DEALINGS IN THE SOFTWARE.
 
 from __future__ import annotations
 
-from typing import List, TYPE_CHECKING, Optional
+from typing import Collection, List, TYPE_CHECKING, Literal, Optional
 
 from . import utils
 from .asset import Asset
 from .enums import ApplicationType, ApplicationVerificationState, RPCApplicationState, StoreApplicationState, try_enum
 from .flags import ApplicationFlags
+from .mixins import Hashable
+from .object import Object
+from .permissions import Permissions
 from .user import User
 
 if TYPE_CHECKING:
-    from .abc import Snowflake
+    from .abc import Snowflake, User as abcUser
     from .guild import Guild
     from .types.appinfo import (
         AppInfo as AppInfoPayload,
@@ -41,11 +44,14 @@ if TYPE_CHECKING:
         Team as TeamPayload,
     )
     from .state import ConnectionState
-    from .user import BaseUser
 
 __all__ = (
+    'ApplicationBot',
+    'ApplicationCompany',
+    'ApplicationExecutable',
     'Application',
     'PartialApplication',
+    'InteractionApplication',
 )
 
 MISSING = utils.MISSING
@@ -53,6 +59,8 @@ MISSING = utils.MISSING
 
 class ApplicationBot(User):
     """Represents a bot attached to an application.
+
+    .. versionadded:: 2.0
 
     Attributes
     -----------
@@ -64,15 +72,13 @@ class ApplicationBot(User):
     require_code_grant: :class:`bool`
         Whether the bot requires the completion of the full OAuth2 code
         grant flow to join.
-    token: Optional[:class:`str`]
-        The bot's token. Only accessible when reset.
     """
-    __slots__ = ('token', 'public', 'require_code_grant')
+
+    __slots__ = ('public', 'require_code_grant')
 
     def __init__(self, *, data, state: ConnectionState, application: Application):
         super().__init__(state=state, data=data)
         self.application = application
-        self.token: str = data['token']
         self.public: bool = data['public']
         self.require_code_grant: bool = data['require_code_grant']
 
@@ -92,9 +98,7 @@ class ApplicationBot(User):
             The new token.
         """
         data = await self._state.http.reset_token(self.application.id)
-        self.token = token = data['token']
-        self._update(data)
-        return token
+        return data['token']
 
     async def edit(
         self,
@@ -132,10 +136,107 @@ class ApplicationBot(User):
         self.application._update(data)
 
 
-class PartialApplication:
+class ApplicationCompany(Hashable):
+    """Represents a developer or publisher of an application.
+
+    .. container:: operations
+
+        .. describe:: x == y
+
+            Checks if two companies are equal.
+
+        .. describe:: x != y
+
+            Checks if two companies are not equal.
+
+        .. describe:: hash(x)
+
+            Return the company's hash.
+
+        .. describe:: str(x)
+
+            Returns the company's name.
+
+    .. versionadded:: 2.0
+
+    Attributes
+    -----------
+    id: :class:`int`
+        The company's ID.
+    name: :class:`str`
+        The company's name.
+    application: Union[:class:`PartialApplication`, :class:`Application`]
+        The application that the company developed or published.
+    """
+
+    __slots__ = (
+        'id',
+        'name',
+        'application',
+    )
+
+    def __init__(self, *, data: dict, application: PartialApplication):
+        self.id: int = int(data['id'])
+        self.name: str = data['name']
+        self.application = application
+
+    def __str__(self) -> str:
+        return self.name
+
+
+class ApplicationExecutable:
+    """Represents an application executable.
+
+    .. versionadded:: 2.0
+
+    Attributes
+    -----------
+    name: :class:`str`
+        The name of the executable.
+    os: :class:`str`
+        The operating system the executable is for.
+    launcher: :class:`bool`
+        Whether the executable is a launcher or not.
+    application: Union[:class:`PartialApplication`, :class:`Application`]
+        The application that the executable is for.
+    """
+
+    __slots__ = (
+        'name',
+        'os',
+        'launcher',
+        'application',
+    )
+
+    def __init__(self, *, data: dict, application: PartialApplication):
+        self.name: str = data['name']
+        self.os: Literal['win32', 'linux', 'darwin'] = data['os']
+        self.launcher: bool = data['is_launcher']
+        self.application = application
+
+
+class PartialApplication(Hashable):
     """Represents a partial Application.
 
     .. versionadded:: 2.0
+
+    .. container:: operations
+
+        .. describe:: x == y
+
+            Checks if two applications are equal.
+
+        .. describe:: x != y
+
+            Checks if two applications are not equal.
+
+        .. describe:: hash(x)
+
+            Return the application's hash.
+
+        .. describe:: str(x)
+
+            Returns the application's name.
 
     Attributes
     -------------
@@ -145,11 +246,8 @@ class PartialApplication:
         The application name.
     description: :class:`str`
         The application description.
-    rpc_origins: Optional[List[:class:`str`]]
+    rpc_origins: List[:class:`str`]
         A list of RPC origin URLs, if RPC is enabled.
-    summary: :class:`str`
-        If this application is a game sold on Discord,
-        this field will be the summary field for the store page of its primary SKU.
     verify_key: :class:`str`
         The hex encoded key for verification in interactions and the
         GameSDK's `GetTicket <https://discord.com/developers/docs/game-sdk/applications#getticket>`_.
@@ -173,6 +271,16 @@ class PartialApplication:
         The type of application.
     tags: List[:class:`str`]
         A list of tags that describe the application.
+    overlay: :class:`bool`
+        Whether the application has a Discord overlay or not.
+    aliases: List[:class:`str`]
+        A list of aliases that can be used to identify the application. Only available for specific applications.
+    developers: List[:class:`ApplicationCompany`]
+        A list of developers that developed the application. Only available for specific applications.
+    publishers: List[:class:`ApplicationCompany`]
+        A list of publishers that published the application. Only available for specific applications.
+    executables: List[:class:`ApplicationExecutable`]
+        A list of executables that are the application's. Only available for specific applications.
     """
 
     __slots__ = (
@@ -181,35 +289,57 @@ class PartialApplication:
         'name',
         'description',
         'rpc_origins',
-        'summary',
         'verify_key',
         'terms_of_service_url',
         'privacy_policy_url',
         '_icon',
-        '_flags'
+        '_flags',
         '_cover_image',
+        '_splash',
         'public',
         'require_code_grant',
         'type',
         'hook',
         'premium_tier_level',
         'tags',
+        'max_participants',
+        'install_url',
+        'overlay',
+        'overlay_compatibility_hook',
+        'aliases',
+        'developers',
+        'publishers',
+        'executables',
     )
 
     def __init__(self, *, state: ConnectionState, data: PartialAppInfoPayload):
         self._state: ConnectionState = state
         self._update(data)
 
+    def __str__(self) -> str:
+        return self.name
+
     def _update(self, data: PartialAppInfoPayload) -> None:
         self.id: int = int(data['id'])
         self.name: str = data['name']
         self.description: str = data['description']
-        self.rpc_origins: Optional[List[str]] = data.get('rpc_origins')
-        self.summary: str = data['summary']
+        self.rpc_origins: Optional[List[str]] = data.get('rpc_origins') or []
         self.verify_key: str = data['verify_key']
+
+        self.developers: List[ApplicationCompany] = [
+            ApplicationCompany(data=d, application=self) for d in data.get('developers', [])
+        ]
+        self.publishers: List[ApplicationCompany] = [
+            ApplicationCompany(data=d, application=self) for d in data.get('publishers', [])
+        ]
+        self.executables: List[ApplicationExecutable] = [
+            ApplicationExecutable(data=e, application=self) for e in data.get('executables', [])
+        ]
+        self.aliases: List[str] = data.get('aliases', [])
 
         self._icon: Optional[str] = data.get('icon')
         self._cover_image: Optional[str] = data.get('cover_image')
+        self._splash: Optional[str] = data.get('splash')
 
         self.terms_of_service_url: Optional[str] = data.get('terms_of_service_url')
         self.privacy_policy_url: Optional[str] = data.get('privacy_policy_url')
@@ -219,9 +349,26 @@ class PartialApplication:
         self.max_participants: Optional[int] = data.get('max_participants')
         self.premium_tier_level: Optional[int] = data.get('embedded_activity_config', {}).get('activity_premium_tier_level')
         self.tags: List[str] = data.get('tags', [])
+        self.overlay: bool = data.get('overlay', False)
+        self.overlay_compatibility_hook: bool = data.get('overlay_compatibility_hook', False)
 
-        self.public: bool = data.get('integration_public', data.get('bot_public', True))  # The two seem to be used interchangeably?
-        self.require_code_grant: bool = data.get('integration_require_code_grant', data.get('bot_require_code_grant', False))  # Same here
+        install_params = data.get('install_params', {})
+        self.install_url = (
+            data.get('custom_install_url')
+            if not install_params
+            else utils.oauth_url(
+                self.id,
+                permissions=Permissions(int(install_params.get('permissions', 0))),
+                scopes=install_params.get('scopes', utils.MISSING),
+            )
+        )
+
+        self.public: bool = data.get(
+            'integration_public', data.get('bot_public', True)
+        )  # The two seem to be used interchangeably?
+        self.require_code_grant: bool = data.get(
+            'integration_require_code_grant', data.get('bot_require_code_grant', False)
+        )  # Same here
 
     def __repr__(self) -> str:
         return f'<{self.__class__.__name__} id={self.id} name={self.name!r} description={self.description!r}>'
@@ -244,6 +391,13 @@ class PartialApplication:
         return Asset._from_cover_image(self._state, self.id, self._cover_image)
 
     @property
+    def splash(self) -> Optional[Asset]:
+        """Optional[:class:`.Asset`]: Retrieves the application's splash asset, if any."""
+        if self._splash is None:
+            return None
+        return Asset._from_application_asset(self._state, self.id, self._splash)
+
+    @property
     def flags(self) -> ApplicationFlags:
         """:class:`ApplicationFlags`: The flags of this application."""
         return ApplicationFlags._from_value(self._flags)
@@ -256,7 +410,7 @@ class Application(PartialApplication):
 
     Attributes
     -------------
-    owner: :class:`BaseUser`
+    owner: :class:`abc.User`
         The application owner.
     team: Optional[:class:`Team`]
         The application's team.
@@ -274,8 +428,6 @@ class Application(PartialApplication):
         this field will be the URL slug that links to the store page.
     interactions_endpoint_url: Optional[:class:`str`]
         The URL interactions will be sent to, if set.
-    secret: :class:`str`
-        The application's secret key.
     redirect_uris: List[:class:`str`]
         A list of redirect URIs authorized for this application.
     verification_state: :class:`ApplicationVerificationState`
@@ -292,7 +444,6 @@ class Application(PartialApplication):
         'guild_id',
         'primary_sku_id',
         'slug',
-        'secret',
         'redirect_uris',
         'bot',
         'verification_state',
@@ -305,33 +456,30 @@ class Application(PartialApplication):
         super()._update(data)
         from .team import Team
 
-        self.secret: str = data['secret']
-        self.redirect_uris: List[str] = data.get('redirect_uris', [])
-
         self.guild_id: Optional[int] = utils._get_as_snowflake(data, 'guild_id')
-
-        self.verification_state = try_enum(ApplicationVerificationState, data['verification_state'])
-        self.store_application_state = try_enum(StoreApplicationState, data['store_application_state'])
-        self.rpc_application_state = try_enum(RPCApplicationState, data['rpc_application_state'])
-
+        self.redirect_uris: List[str] = data.get('redirect_uris', [])
         self.primary_sku_id: Optional[int] = utils._get_as_snowflake(data, 'primary_sku_id')
         self.slug: Optional[str] = data.get('slug')
-        self.interactions_endpoint_url: Optional[str] = data['interactions_endpoint_url']
+        self.interactions_endpoint_url: Optional[str] = data.get('interactions_endpoint_url')
+
+        self.verification_state = try_enum(ApplicationVerificationState, data['verification_state'])
+        self.store_application_state = try_enum(StoreApplicationState, data.get('store_application_state', 1))
+        self.rpc_application_state = try_enum(RPCApplicationState, data.get('rpc_application_state', 0))
 
         state = self._state
         team: Optional[TeamPayload] = data.get('team')
         self.team: Optional[Team] = Team(state, team) if team else None
 
-        if (bot := data.get('bot')):
+        if bot := data.get('bot'):
             bot['public'] = data.get('bot_public', self.public)
             bot['require_code_grant'] = data.get('bot_require_code_grant', self.require_code_grant)
         self.bot: Optional[ApplicationBot] = ApplicationBot(data=bot, state=state, application=self) if bot else None
 
         owner = data.get('owner')
-        if owner is not None and int(owner['id']) != state.self_id:  # Consistency
-            self.owner: BaseUser = state.create_user(owner)
+        if owner is not None:
+            self.owner: abcUser = state.create_user(owner)
         else:
-            self.owner: BaseUser = state.user  # type: ignore
+            self.owner: abcUser = state.user  # type: ignore # state.user will always be present here
 
     def __repr__(self) -> str:
         return (
@@ -354,12 +502,12 @@ class Application(PartialApplication):
         description: Optional[str] = MISSING,
         icon: Optional[bytes] = MISSING,
         cover_image: Optional[bytes] = MISSING,
-        tags: List[str] = MISSING,
+        tags: Collection[str] = MISSING,
         terms_of_service_url: Optional[str] = MISSING,
         privacy_policy_url: Optional[str] = MISSING,
         interactions_endpoint_url: Optional[str] = MISSING,
-        redirect_uris: List[str] = MISSING,
-        rpc_origins: List[str] = MISSING,
+        redirect_uris: Collection[str] = MISSING,
+        rpc_origins: Collection[str] = MISSING,
         public: bool = MISSING,
         require_code_grant: bool = MISSING,
         flags: ApplicationFlags = MISSING,
@@ -397,7 +545,7 @@ class Application(PartialApplication):
             Whether the application requires a code grant or not.
         flags: :class:`ApplicationFlags`
             The flags of the application.
-        team: :class:`Snowflake`
+        team: :class:`~abc.Snowflake`
             The team to transfer the application to.
 
         Raises
@@ -441,13 +589,14 @@ class Application(PartialApplication):
         if flags is not MISSING:
             payload['flags'] = flags.value
 
-        data = await self._state.http.edit_application(self.id, payload)
         if team is not MISSING:
-            data = await self._state.http.transfer_application(self.id, team.id)
+            await self._state.http.transfer_application(self.id, team.id)
+
+        data = await self._state.http.edit_application(self.id, payload)
 
         self._update(data)
 
-    async def reset_secret(self) -> None:
+    async def reset_secret(self) -> str:
         """|coro|
 
         Resets the application's secret.
@@ -458,9 +607,14 @@ class Application(PartialApplication):
             You do not have permissions to reset the secret.
         HTTPException
             Resetting the secret failed.
+
+        Returns
+        -------
+        :class:`str`
+            The new secret.
         """
         data = await self._state.http.reset_secret(self.id)
-        self._update(data)
+        return data['secret']  # type: ignore # Usually not there
 
     async def create_bot(self) -> ApplicationBot:
         """|coro|
@@ -488,3 +642,82 @@ class Application(PartialApplication):
         bot = ApplicationBot(data=data, state=state, application=self)
         self.bot = bot
         return bot
+
+
+class InteractionApplication(Hashable):
+    """Represents a very partial Application received in interaction contexts.
+
+    .. versionadded:: 2.0
+
+    .. container:: operations
+
+        .. describe:: x == y
+
+            Checks if two applications are equal.
+
+        .. describe:: x != y
+
+            Checks if two applications are not equal.
+
+        .. describe:: hash(x)
+
+            Return the application's hash.
+
+        .. describe:: str(x)
+
+            Returns the application's name.
+
+    Attributes
+    -------------
+    id: :class:`int`
+        The application ID.
+    name: :class:`str`
+        The application name.
+    bot: :class:`User`
+        The bot attached to the application.
+    description: Optional[:class:`str`]
+        The application description.
+    type: Optional[:class:`ApplicationType`]
+        The type of application.
+    """
+
+    __slots__ = (
+        '_state',
+        'id',
+        'name',
+        'description',
+        '_icon',
+        'type',
+        'bot',
+    )
+
+    def __init__(self, *, state: ConnectionState, data: dict):
+        self._state: ConnectionState = state
+        self._update(data)
+
+    def __str__(self) -> str:
+        return self.name
+
+    def _update(self, data: dict) -> None:
+        self.id: int = int(data['id'])
+        self.name: str = data['name']
+        self.description: str = data.get('description') or ''
+        self._icon: Optional[str] = data.get('icon')
+        self.type: Optional[ApplicationType] = try_enum(ApplicationType, data['type']) if 'type' in data else None
+
+        self.bot: User  # User data should always be available, but these payloads are volatile
+        user = data.get('bot')
+        if user is not None:
+            self.bot = self._state.create_user(user)
+        else:
+            self.bot = Object(id=self.id)  # type: ignore
+
+    def __repr__(self) -> str:
+        return f'<{self.__class__.__name__} id={self.id} name={self.name!r}>'
+
+    @property
+    def icon(self) -> Optional[Asset]:
+        """Optional[:class:`.Asset`]: Retrieves the application's icon asset, if any."""
+        if self._icon is None:
+            return None
+        return Asset._from_icon(self._state, self.id, self._icon, path='app')

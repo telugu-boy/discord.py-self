@@ -34,15 +34,23 @@ with open('README.rst') as f:
     readme = f.read()
 
 extras_require = {
-    'voice': ['PyNaCl>=1.3.0,<1.5'],
+    'voice': ['PyNaCl>=1.3.0,<1.6'],
     'docs': [
-        'sphinx==4.0.2',
+        'sphinx==4.4.0',
         'sphinxcontrib_trio==1.1.2',
         'sphinxcontrib-websupport',
+        'typing-extensions',
     ],
     'speed': [
         'aiohttp[speedups]',
         'orjson>=3.5.4',
+    ],
+    'test': [
+        'coverage[toml]',
+        'pytest',
+        'pytest-asyncio',
+        'pytest-cov',
+        'pytest-mock'
     ]
 }
 
@@ -50,8 +58,10 @@ setup(name='discord.py-self',
       author='Dolfies',
       url='https://github.com/dolfies/discord.py-self',
       project_urls={
-        "Documentation": "https://dolf.ml/discord.py-self",
+        "Documentation": "https://discordpy-self.readthedocs.io/en/latest/",
         "Issue tracker": "https://github.com/dolfies/discord.py-self/issues",
+        "Project updates": "https://t.me/dpy_self",
+        "Discussion & support": "https://t.me/dpy_self_discussions",
       },
       version=version,
       packages=find_packages() + ['discord.ext.commands', 'discord.ext.tasks'],

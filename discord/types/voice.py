@@ -23,6 +23,8 @@ DEALINGS IN THE SOFTWARE.
 """
 
 from typing import Optional, TypedDict, List, Literal
+from typing_extensions import NotRequired
+
 from .snowflake import Snowflake
 from .member import MemberWithUser
 
@@ -30,12 +32,7 @@ from .member import MemberWithUser
 SupportedModes = Literal['xsalsa20_poly1305_lite', 'xsalsa20_poly1305_suffix', 'xsalsa20_poly1305']
 
 
-class _PartialVoiceStateOptional(TypedDict, total=False):
-    member: MemberWithUser
-    self_stream: bool
-
-
-class _VoiceState(_PartialVoiceStateOptional):
+class _VoiceState(TypedDict):
     user_id: Snowflake
     session_id: str
     deaf: bool
@@ -44,6 +41,8 @@ class _VoiceState(_PartialVoiceStateOptional):
     self_mute: bool
     self_video: bool
     suppress: bool
+    member: NotRequired[MemberWithUser]
+    self_stream: NotRequired[bool]
 
 
 class GuildVoiceState(_VoiceState):
@@ -52,7 +51,7 @@ class GuildVoiceState(_VoiceState):
 
 class VoiceState(_VoiceState, total=False):
     channel_id: Optional[Snowflake]
-    guild_id: Snowflake
+    guild_id: NotRequired[Optional[Snowflake]]
 
 
 class VoiceRegion(TypedDict):
@@ -67,6 +66,7 @@ class VoiceRegion(TypedDict):
 class VoiceServerUpdate(TypedDict):
     token: str
     guild_id: Snowflake
+    channel_id: Snowflake
     endpoint: Optional[str]
 
 

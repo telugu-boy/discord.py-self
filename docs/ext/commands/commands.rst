@@ -52,7 +52,7 @@ Essentially, these two are equivalent: ::
 Since the :meth:`.Bot.command` decorator is shorter and easier to comprehend, it will be the one used throughout the
 documentation here.
 
-Any parameter that is accepted by the :class:`.Command` constructor can be passed into the decorator. For example, to change
+Any parameter that is accepted by the :class:`~discord.ext.commands.Command` constructor can be passed into the decorator. For example, to change
 the name to something other than the function would be as simple as doing this:
 
 .. code-block:: python3
@@ -171,9 +171,9 @@ As seen earlier, every command must take at least a single parameter, called the
 This parameter gives you access to something called the "invocation context". Essentially all the information you need to
 know how the command was executed. It contains a lot of useful information:
 
-- :attr:`.Context.guild` to fetch the :class:`Guild` of the command, if any.
-- :attr:`.Context.message` to fetch the :class:`Message` of the command.
-- :attr:`.Context.author` to fetch the :class:`Member` or :class:`User` that called the command.
+- :attr:`.Context.guild` returns the :class:`Guild` of the command, if any.
+- :attr:`.Context.message` returns the :class:`Message` of the command.
+- :attr:`.Context.author` returns the :class:`Member` or :class:`User` that called the command.
 - :meth:`.Context.send` to send a message to the channel the command was used in.
 
 The context implements the :class:`abc.Messageable` interface, so anything you can do on a :class:`abc.Messageable` you
@@ -383,7 +383,6 @@ A lot of discord models work out of the gate as a parameter:
 - :class:`TextChannel`
 - :class:`VoiceChannel`
 - :class:`StageChannel` (since v1.7)
-- :class:`StoreChannel` (since v1.7)
 - :class:`CategoryChannel`
 - :class:`Invite`
 - :class:`Guild` (since v1.7)
@@ -393,6 +392,8 @@ A lot of discord models work out of the gate as a parameter:
 - :class:`Emoji`
 - :class:`PartialEmoji`
 - :class:`Thread` (since v2.0)
+- :class:`GuildSticker` (since v2.0)
+- :class:`ScheduledEvent` (since v2.0)
 
 Having any of these set as the converter will intelligently convert the argument to the appropriate target type you
 specify.
@@ -421,8 +422,6 @@ converter is given below:
 +--------------------------+-------------------------------------------------+
 | :class:`StageChannel`    | :class:`~ext.commands.StageChannelConverter`    |
 +--------------------------+-------------------------------------------------+
-| :class:`StoreChannel`    | :class:`~ext.commands.StoreChannelConverter`    |
-+--------------------------+-------------------------------------------------+
 | :class:`CategoryChannel` | :class:`~ext.commands.CategoryChannelConverter` |
 +--------------------------+-------------------------------------------------+
 | :class:`Invite`          | :class:`~ext.commands.InviteConverter`          |
@@ -440,6 +439,10 @@ converter is given below:
 | :class:`PartialEmoji`    | :class:`~ext.commands.PartialEmojiConverter`    |
 +--------------------------+-------------------------------------------------+
 | :class:`Thread`          | :class:`~ext.commands.ThreadConverter`          |
++--------------------------+-------------------------------------------------+
+| :class:`GuildSticker`    | :class:`~ext.commands.GuildStickerConverter`    |
++--------------------------+-------------------------------------------------+
+| :class:`ScheduledEvent`  | :class:`~ext.commands.ScheduledEventConverter`  |
 +--------------------------+-------------------------------------------------+
 
 By providing the converter it allows us to use them as building blocks for another converter:
@@ -758,6 +761,58 @@ A :class:`dict` annotation is functionally equivalent to ``List[Tuple[K, V]]`` e
 given as a :class:`dict` rather than a :class:`list`.
 
 
+.. _ext_commands_parameter:
+
+Parameter Metadata
+-------------------
+
+:func:`~ext.commands.parameter` assigns custom metadata to a :class:`~ext.commands.Command`'s parameter.
+
+This is useful for:
+
+- Custom converters as annotating a parameter with a custom converter works at runtime, type checkers don't like it
+  because they can't understand what's going on.
+
+  .. code-block:: python3
+
+      class SomeType:
+          foo: int
+
+      class MyVeryCoolConverter(commands.Converter[SomeType]):
+          ...  # implementation left as an exercise for the reader
+
+      @bot.command()
+      async def bar(ctx, cool_value: MyVeryCoolConverter):
+          cool_value.foo  # type checker warns MyVeryCoolConverter has no value foo (uh-oh)
+
+  However, fear not we can use :func:`~ext.commands.parameter` to tell type checkers what's going on.
+
+  .. code-block:: python3
+
+      @bot.command()
+      async def bar(ctx, cool_value: SomeType = commands.parameter(converter=MyVeryCoolConverter)):
+          cool_value.foo  # no error (hurray)
+
+- Late binding behaviour
+
+  .. code-block:: python3
+
+      @bot.command()
+      async def wave(to: discord.User = commands.parameter(default=lambda ctx: ctx.author)):
+          await ctx.send(f'Hello {to.mention} :wave:')
+
+  Because this is such a common use-case, the library provides :obj:`~.ext.commands.Author`, :obj:`~.ext.commands.CurrentChannel` and
+  :obj:`~.ext.commands.CurrentGuild`, armed with this we can simplify ``wave`` to:
+
+  .. code-block:: python3
+
+      @bot.command()
+      async def wave(to: discord.User = commands.Author):
+          await ctx.send(f'Hello {to.mention} :wave:')
+
+  :obj:`~.ext.commands.Author` and co also have other benefits like having the displayed default being filled.
+
+
 .. _ext_commands_error_handler:
 
 Error Handling
@@ -771,7 +826,7 @@ In order to handle our errors, we must use something called an error handler. Th
 called for every error reached.
 
 Most of the time however, we want to handle an error local to the command itself. Luckily, commands come with local error
-handlers that allow us to do just that. First we decorate an error handler function with :meth:`.Command.error`:
+handlers that allow us to do just that. First we decorate an error handler function with :meth:`~discord.ext.commands.Command.error`:
 
 .. code-block:: python3
 

@@ -24,29 +24,36 @@ DEALINGS IN THE SOFTWARE.
 
 from __future__ import annotations
 
-from typing import Any, Callable, ClassVar, Dict, Iterator, List, Optional, Tuple, Type, TypeVar, overload
+from typing import TYPE_CHECKING, Any, Callable, ClassVar, Dict, Iterator, List, Optional, Tuple, Type, TypeVar, overload
 
 from .enums import UserFlags
+
+if TYPE_CHECKING:
+    from typing_extensions import Self
+
 
 __all__ = (
     'SystemChannelFlags',
     'MessageFlags',
     'PublicUserFlags',
+    'PrivateUserFlags',
     'MemberCacheFlags',
     'ApplicationFlags',
+    'ChannelFlags',
+    'PremiumUsageFlags',
+    'PurchasedFlags',
 )
 
-FV = TypeVar('FV', bound='flag_value')
 BF = TypeVar('BF', bound='BaseFlags')
 
 
 class flag_value:
     def __init__(self, func: Callable[[Any], int]):
-        self.flag = func(None)
-        self.__doc__ = func.__doc__
+        self.flag: int = func(None)
+        self.__doc__: Optional[str] = func.__doc__
 
     @overload
-    def __get__(self: FV, instance: None, owner: Type[BF]) -> FV:
+    def __get__(self, instance: None, owner: Type[BF]) -> Self:
         ...
 
     @overload
@@ -58,10 +65,10 @@ class flag_value:
             return self
         return instance._has_flag(self.flag)
 
-    def __set__(self, instance: BF, value: bool) -> None:
+    def __set__(self, instance: BaseFlags, value: bool) -> None:
         instance._set_flag(self.flag, value)
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f'<flag_value flag={self.flag!r}>'
 
 
@@ -69,8 +76,8 @@ class alias_flag_value(flag_value):
     pass
 
 
-def fill_with_flags(*, inverted: bool = False):
-    def decorator(cls: Type[BF]):
+def fill_with_flags(*, inverted: bool = False) -> Callable[[Type[BF]], Type[BF]]:
+    def decorator(cls: Type[BF]) -> Type[BF]:
         # fmt: off
         cls.VALID_FLAGS = {
             name: value.flag
@@ -81,7 +88,7 @@ def fill_with_flags(*, inverted: bool = False):
 
         if inverted:
             max_bits = max(cls.VALID_FLAGS.values()).bit_length()
-            cls.DEFAULT_VALUE = -1 + (2 ** max_bits)
+            cls.DEFAULT_VALUE = -1 + (2**max_bits)
         else:
             cls.DEFAULT_VALUE = 0
 
@@ -112,10 +119,10 @@ class BaseFlags:
         self.value = value
         return self
 
-    def __eq__(self, other: Any) -> bool:
+    def __eq__(self, other: object) -> bool:
         return isinstance(other, self.__class__) and self.value == other.value
 
-    def __ne__(self, other: Any) -> bool:
+    def __ne__(self, other: object) -> bool:
         return not self.__eq__(other)
 
     def __hash__(self) -> int:
@@ -217,7 +224,8 @@ class SystemChannelFlags(BaseFlags):
 
     @flag_value
     def join_notification_replies(self):
-        """:class:`bool`: Returns ``True`` if members are prompted to reply to join notifications with a sticker.
+        """:class:`bool`: Returns ``True`` if sticker reply button ("Wave to say hi!") is
+        shown for member join notifications.
 
         .. versionadded:: 2.0
         """
@@ -304,8 +312,8 @@ class MessageFlags(BaseFlags):
 
     @flag_value
     def loading(self):
-        """:class:`bool`: Returns ``True`` if the message is an
-        Interaction Response and the bot is "thinking".
+        """:class:`bool`: Returns ``True`` if the message is an interaction response and the bot
+        is "thinking".
 
         .. versionadded:: 2.0
         """
@@ -313,10 +321,8 @@ class MessageFlags(BaseFlags):
 
     @flag_value
     def failed_to_mention_some_roles_in_thread(self):
-        """:class:`bool`: Returns ``True`` if the source message failed to
-        mention some roles and add their members to the thread.
-
-        There is an alias for this called :attr:`failed_to_mention_roles`.
+        """:class:`bool`: Returns ``True`` if the message failed to mention some roles in a thread
+        and add their members to the thread.
 
         .. versionadded:: 2.0
         """
@@ -450,7 +456,8 @@ class PublicUserFlags(BaseFlags):
 
     @flag_value
     def bot_http_interactions(self):
-        """:class:`bool`: Returns ``True`` if the bot doesn't connect to the gateway but should still be shown as online.
+        """:class:`bool`: Returns ``True`` if the user is a bot that only uses HTTP interactions
+        and is shown in the online member list.
 
         .. versionadded:: 2.0
         """
@@ -458,7 +465,7 @@ class PublicUserFlags(BaseFlags):
 
     @flag_value
     def spammer(self):
-        """:class:`bool`: Returns ``True`` if the user is marked as a spammer.
+        """:class:`bool`: Returns ``True`` if the user is flagged as a spammer by Discord.
 
         .. versionadded:: 2.0
         """
@@ -473,35 +480,35 @@ class PublicUserFlags(BaseFlags):
 class PrivateUserFlags(PublicUserFlags):
     r"""Wraps up the Discord User flags.
 
-        .. note::
-            These are only available on your own user flags.
+    .. container:: operations
 
-        .. container:: operations
+        .. describe:: x == y
 
-            .. describe:: x == y
+            Checks if two PrivateUserFlags are equal.
+        .. describe:: x != y
 
-                Checks if two UserFlags are equal.
-            .. describe:: x != y
+            Checks if two PrivateUserFlags are not equal.
+        .. describe:: hash(x)
 
-                Checks if two UserFlags are not equal.
-            .. describe:: hash(x)
+            Return the flag's hash.
+        .. describe:: iter(x)
 
-                Return the flag's hash.
-            .. describe:: iter(x)
+            Returns an iterator of ``(name, value)`` pairs. This allows it
+            to be, for example, constructed as a dict or a list of pairs.
+            Note that aliases are not shown.
 
-                Returns an iterator of ``(name, value)`` pairs. This allows it
-                to be, for example, constructed as a dict or a list of pairs.
-                Note that aliases are not shown.
+    .. note::
+        These are only available on your own user flags.
 
-        .. versionadded:: 2.0
+    .. versionadded:: 2.0
 
-        Attributes
-        -----------
-        value: :class:`int`
-            The raw value. This value is a bit array field of a 53-bit integer
-            representing the currently available flags. You should query
-            flags via the properties rather than using this raw value.
-        """
+    Attributes
+    -----------
+    value: :class:`int`
+        The raw value. This value is a bit array field of a 53-bit integer
+        representing the currently available flags. You should query
+        flags via the properties rather than using this raw value.
+    """
 
     __slots__ = ()
 
@@ -529,6 +536,109 @@ class PrivateUserFlags(PublicUserFlags):
     def partner_or_verification_application(self):
         """:class:`bool`: Returns ``True`` if the user has a partner or a verification application."""
         return UserFlags.partner_or_verification_application.value
+
+    @flag_value
+    def disable_premium(self):
+        """:class:`bool`: Returns ``True`` if the user bought premium but has it manually disabled."""
+        return UserFlags.disable_premium.value
+
+
+@fill_with_flags()
+class PremiumUsageFlags(BaseFlags):
+    r"""Wraps up the Discord premium usage flags.
+
+    .. container:: operations
+
+        .. describe:: x == y
+
+            Checks if two PremiumUsageFlags are equal.
+        .. describe:: x != y
+
+            Checks if two PremiumUsageFlags are not equal.
+        .. describe:: hash(x)
+
+            Return the flag's hash.
+        .. describe:: iter(x)
+
+            Returns an iterator of ``(name, value)`` pairs. This allows it
+            to be, for example, constructed as a dict or a list of pairs.
+            Note that aliases are not shown.
+
+    .. versionadded:: 2.0
+
+    Attributes
+    -----------
+    value: :class:`int`
+        The raw value. This value is a bit array field of a 53-bit integer
+        representing the currently available flags. You should query
+        flags via the properties rather than using this raw value.
+    """
+
+    __slots__ = ()
+
+    @flag_value
+    def premium_discriminator(self):
+        """:class:`bool`: Returns ``True`` if the user utilized premium discriminators."""
+        return 1 << 0
+
+    @flag_value
+    def animated_avatar(self):
+        """:class:`bool`: Returns ``True`` if the user utilized animated avatars."""
+        return 1 << 1
+
+    @flag_value
+    def profile_banner(self):
+        """:class:`bool`: Returns ``True`` if the user utilized profile banners."""
+        return 1 << 2
+
+
+@fill_with_flags()
+class PurchasedFlags(BaseFlags):
+    r"""Wraps up the Discord purchased flags.
+
+    .. container:: operations
+
+        .. describe:: x == y
+
+            Checks if two PurchasedFlags are equal.
+        .. describe:: x != y
+
+            Checks if two PurchasedFlags are not equal.
+        .. describe:: hash(x)
+
+            Return the flag's hash.
+        .. describe:: iter(x)
+
+            Returns an iterator of ``(name, value)`` pairs. This allows it
+            to be, for example, constructed as a dict or a list of pairs.
+            Note that aliases are not shown.
+
+    .. versionadded:: 2.0
+
+    Attributes
+    -----------
+    value: :class:`int`
+        The raw value. This value is a bit array field of a 53-bit integer
+        representing the currently available flags. You should query
+        flags via the properties rather than using this raw value.
+    """
+
+    __slots__ = ()
+
+    @flag_value
+    def nitro_classic(self):
+        """:class:`bool`: Returns ``True`` if the user has previously purchased Nitro classic."""
+        return 1 << 0
+
+    @flag_value
+    def nitro(self):
+        """:class:`bool`: Returns ``True`` if the user has previously purchased Nitro."""
+        return 1 << 1
+
+    @flag_value
+    def guild_boost(self):
+        """:class:`bool`: Returns ``True`` if the user has previously purchased a guild boost."""
+        return 1 << 2
 
 
 @fill_with_flags()
@@ -573,7 +683,7 @@ class MemberCacheFlags(BaseFlags):
 
     def __init__(self, **kwargs: bool):
         bits = max(self.VALID_FLAGS.values()).bit_length()
-        self.value = (1 << bits) - 1
+        self.value: int = (1 << bits) - 1
         for key, value in kwargs.items():
             if key not in self.VALID_FLAGS:
                 raise TypeError(f'{key!r} is not a valid flag name.')
@@ -677,7 +787,7 @@ class ApplicationFlags(BaseFlags):
     @flag_value
     def gateway_presence_limited(self):
         """:class:`bool`: Returns ``True`` if the application is allowed to receive
-        presence information over the gateway but is not whitelisted.
+        presence information over the gateway.
         """
         return 1 << 13
 
@@ -701,8 +811,13 @@ class ApplicationFlags(BaseFlags):
     @flag_value
     def gateway_guild_members_limited(self):
         """:class:`bool`: Returns ``True`` if the application is allowed to receive full
-        guild member lists but is not whitelisted.
+        guild member lists.
         """
+        return 1 << 15
+
+    @alias_flag_value
+    def guild_members_limited(self):
+        """:class:`bool`: Alias for :attr:`gateway_guild_members_limited`."""
         return 1 << 15
 
     @flag_value
@@ -717,11 +832,6 @@ class ApplicationFlags(BaseFlags):
         """:class:`bool`: Returns ``True`` if the application is embedded within the Discord client."""
         return 1 << 17
 
-    @alias_flag_value
-    def guild_members_limited(self):
-        """:class:`bool`: Alias for :attr:`gateway_guild_members_limited`."""
-        return 1 << 15
-
     @flag_value
     def gateway_message_content(self):
         """:class:`bool`: Returns ``True`` if the application is verified and is allowed to
@@ -735,8 +845,8 @@ class ApplicationFlags(BaseFlags):
 
     @flag_value
     def gateway_message_content_limited(self):
-        """:class:`bool`: Returns ``True`` if the application is allowed to receive
-        message content but is not whitelisted."""
+        """:class:`bool`: Returns ``True`` if the application is allowed to
+        read message content in guilds."""
         return 1 << 19
 
     @alias_flag_value
@@ -754,3 +864,38 @@ class ApplicationFlags(BaseFlags):
         """:class:`bool`: Returns ``True`` if the embedded application is released to the public."""
         return 1 << 1
 
+
+@fill_with_flags()
+class ChannelFlags(BaseFlags):
+    r"""Wraps up the Discord :class:`~discord.abc.GuildChannel` or :class:`Thread` flags.
+
+    .. container:: operations
+
+        .. describe:: x == y
+
+            Checks if two channel flags are equal.
+        .. describe:: x != y
+
+            Checks if two channel flags are not equal.
+        .. describe:: hash(x)
+
+            Return the flag's hash.
+        .. describe:: iter(x)
+
+            Returns an iterator of ``(name, value)`` pairs. This allows it
+            to be, for example, constructed as a dict or a list of pairs.
+            Note that aliases are not shown.
+
+    .. versionadded:: 2.0
+
+    Attributes
+    -----------
+    value: :class:`int`
+        The raw value. You should query flags via the properties
+        rather than using this raw value.
+    """
+
+    @flag_value
+    def pinned(self):
+        """:class:`bool`: Returns ``True`` if the thread is pinned to the forum channel."""
+        return 1 << 1

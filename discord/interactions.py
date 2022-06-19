@@ -24,19 +24,50 @@ DEALINGS IN THE SOFTWARE.
 
 from __future__ import annotations
 
-from typing import Optional, TYPE_CHECKING
+from typing import Optional, TYPE_CHECKING, Union
 
 from .enums import InteractionType, try_enum
+from .mixins import Hashable
+from .utils import cached_slot_property, find, MISSING
 
 if TYPE_CHECKING:
+    from .channel import DMChannel, GroupChannel, TextChannel, VoiceChannel
+    from .guild import Guild
+    from .message import Message
+    from .modal import Modal
     from .state import ConnectionState
+    from .threads import Thread
     from .types.snowflake import Snowflake
     from .types.user import User as UserPayload
     from .user import BaseUser, ClientUser
 
+    MessageableChannel = Union[TextChannel, Thread, DMChannel, GroupChannel, VoiceChannel]
 
-class Interaction:
+# fmt: off
+__all__ = (
+    'Interaction',
+)
+# fmt: on
+
+
+class Interaction(Hashable):
     """Represents an interaction.
+
+    .. versionadded:: 2.0
+
+    .. container:: operations
+
+        .. describe:: x == y
+
+            Checks if two interactions are equal.
+
+        .. describe:: x != y
+
+            Checks if two interactions are not equal.
+
+        .. describe:: hash(x)
+
+            Return the interaction's hash.
 
     Attributes
     ------------
@@ -48,15 +79,20 @@ class Interaction:
         The name of the application command, if applicable.
     type: :class:`InteractionType`
         The type of interaction.
-    successful: Optional[:class:`bool`]
+    successful: :class:`bool`
         Whether the interaction succeeded.
         If this is your interaction, this is not immediately available.
         It is filled when Discord notifies us about the outcome of the interaction.
-    user: :class:`User`
-        The user who initiated the interaction.
+    user: Union[:class:`Member`, :class:`abc.User`]
+        The :class:`Member` who initiated the interaction.
+        If :attr:`channel` is a private channel or the
+        user has the left the guild, then it is a :class:`User` instead.
+    modal: Optional[:class:`Modal`]
+        The modal that is in response to this interaction.
+        This is not immediately available and is filled when the modal is dispatched.
     """
 
-    __slots__ = ('id', 'type', 'nonce', 'user', 'name', 'successful')
+    __slots__ = ('id', 'type', 'nonce', 'user', 'name', 'successful', 'modal', '_cs_message', '_cs_channel', '_state')
 
     def __init__(
         self,
@@ -65,36 +101,74 @@ class Interaction:
         nonce: Optional[Snowflake] = None,
         *,
         user: BaseUser,
+        state: ConnectionState,
         name: Optional[str] = None,
+        message: Optional[Message] = None,
+        channel: Optional[MessageableChannel] = None,
     ) -> None:
         self.id = id
         self.nonce = nonce
         self.type = try_enum(InteractionType, type)
         self.user = user
         self.name = name
-        self.successful: Optional[bool] = None
+        self.successful: bool = MISSING
+        self.modal: Optional[Modal] = None
+        self._state = state
+        if message is not None:
+            self._cs_message = message
+        if channel is not None:
+            self._cs_channel = channel
 
     @classmethod
     def _from_self(
-        cls, *, id: Snowflake, type: int, nonce: Optional[Snowflake] = None, user: ClientUser, name: Optional[str]
+        cls,
+        channel: MessageableChannel,
+        *,
+        id: Snowflake,
+        type: int,
+        nonce: Optional[Snowflake] = None,
+        user: ClientUser,
+        name: Optional[str],
     ) -> Interaction:
-        return cls(int(id), type, nonce, user=user, name=name)
+        return cls(int(id), type, nonce, user=user, name=name, state=user._state, channel=channel)
 
     @classmethod
-    def _from_message(
-        cls, state: ConnectionState, *, id: Snowflake, type: int, user: UserPayload, **data
-    ) -> Interaction:
+    def _from_message(cls, message: Message, *, id: Snowflake, type: int, user: UserPayload, **data) -> Interaction:
+        state = message._state
         name = data.get('name')
-        user = state.store_user(user)
-        inst = cls(int(id), type, user=user, name=name)
-        inst.successful = True
-        return inst
+        user_cls = state.store_user(user)
+        self = cls(int(id), type, user=user_cls, name=name, message=message, state=state)
+        self.successful = True
+        return self
 
     def __repr__(self) -> str:
         s = self.successful
         return f'<Interaction id={self.id} type={self.type}{f" successful={s}" if s is not None else ""} user={self.user!r}>'
 
     def __bool__(self) -> bool:
-        if self.successful is not None:
+        if self.successful is not MISSING:
             return self.successful
         raise TypeError('Interaction has not been resolved yet')
+
+    @cached_slot_property('_cs_message')
+    def message(self) -> Optional[Message]:
+        """Optional[:class:`Message`]: Returns the message that is the response to this interaction.
+        May not exist or be cached.
+        """
+
+        def predicate(message: Message) -> bool:
+            return message.interaction is not None and message.interaction.id == self.id
+
+        return find(predicate, self._state.client.cached_messages)
+
+    @property
+    def guild(self) -> Optional[Guild]:
+        """Optional[:class:`Guild`]: Returns the guild the interaction originated from."""
+        return getattr(self.channel, 'guild', getattr(self.message, 'guild', None))
+
+    @cached_slot_property('_cs_channel')
+    def channel(self) -> MessageableChannel:
+        """Union[:class:`TextChannel`, :class:`Thread`, :class:`DMChannel`, :class:`GroupChannel`]:
+        Returns the channel this interaction originated from.
+        """
+        return getattr(self.message, 'channel', None)

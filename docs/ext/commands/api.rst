@@ -338,10 +338,7 @@ Context
 .. autoclass:: discord.ext.commands.Context
     :members:
     :inherited-members:
-    :exclude-members: history, typing
-
-    .. automethod:: discord.ext.commands.Context.history
-        :async-for:
+    :exclude-members: typing
 
     .. automethod:: discord.ext.commands.Context.typing
         :async-with:
@@ -378,9 +375,6 @@ Converters
 .. autoclass:: discord.ext.commands.VoiceChannelConverter
     :members:
 
-.. autoclass:: discord.ext.commands.StoreChannelConverter
-    :members:
-
 .. autoclass:: discord.ext.commands.StageChannelConverter
     :members:
 
@@ -414,6 +408,9 @@ Converters
 .. autoclass:: discord.ext.commands.GuildStickerConverter
     :members:
 
+.. autoclass:: discord.ext.commands.ScheduledEventConverter
+    :members:
+
 .. autoclass:: discord.ext.commands.clean_content
     :members:
 
@@ -431,6 +428,35 @@ Flag Converter
     :members:
 
 .. autofunction:: discord.ext.commands.flag
+
+
+Defaults
+--------
+
+.. autoclass:: discord.ext.commands.Parameter()
+    :members:
+
+.. autofunction:: discord.ext.commands.parameter
+
+.. autofunction:: discord.ext.commands.param
+
+.. data:: discord.ext.commands.Author
+
+    A default :class:`.Parameter` which returns the :attr:`~.Context.author` for this context.
+
+    .. versionadded:: 2.0
+
+.. data:: discord.ext.commands.CurrentChannel
+
+    A default :class:`.Parameter` which returns the :attr:`~.Context.channel` for this context.
+
+    .. versionadded:: 2.0
+
+.. data:: discord.ext.commands.CurrentGuild
+
+    A default :class:`.Parameter` which returns the :attr:`~.Context.guild` for this context. This will never be ``None``. If the command is called in a DM context then :exc:`~discord.ext.commands.NoPrivateMessage` is raised to the error handlers.
+
+    .. versionadded:: 2.0
 
 .. _ext_commands_api_errors:
 
@@ -542,6 +568,9 @@ Exceptions
 .. autoexception:: discord.ext.commands.GuildStickerNotFound
     :members:
 
+.. autoexception:: discord.ext.commands.ScheduledEventNotFound
+    :members:
+
 .. autoexception:: discord.ext.commands.BadBoolArgument
     :members:
 
@@ -626,6 +655,7 @@ Exception Hierarchy
                     - :exc:`~.commands.BadInviteArgument`
                     - :exc:`~.commands.EmojiNotFound`
                     - :exc:`~.commands.GuildStickerNotFound`
+                    - :exc:`~.commands.ScheduledEventNotFound`
                     - :exc:`~.commands.PartialEmojiConversionFailure`
                     - :exc:`~.commands.BadBoolArgument`
                     - :exc:`~.commands.ThreadNotFound`

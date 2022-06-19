@@ -11,6 +11,7 @@
 # All configuration values have a default; values that are commented out
 # serve to show the default.
 
+import logging
 import sys
 import os
 import re
@@ -80,7 +81,7 @@ master_doc = 'index'
 
 # General information about the project.
 project = 'discord.py-self'
-#copyright = ''
+copyright = '2015-present, Rapptz and 2021-present, Dolfies'
 
 # The version info for the project you're documenting, acts as replacement for
 # |version| and |release|, also used in various other places throughout the
@@ -105,7 +106,6 @@ branch = 'master' if version.endswith('a') else 'v' + version
 # Usually you set "language" from the command line for these cases.
 language = None
 
-locale_dirs = ['locale/']
 gettext_compact = False
 
 # There are two options for replacing |today|: either, you set today to some
@@ -145,9 +145,25 @@ pygments_style = 'friendly'
 
 # Nitpicky mode options
 nitpick_ignore_files = [
+  "migrating_from_dpy",
   "migrating",
   "whats_new",
 ]
+
+
+# Ignore warnings about inconsistent order and/or count of references in translated messages.
+# This makes no sense, different languages can have different word order...
+def _i18n_warning_filter(record: logging.LogRecord) -> bool:
+  return not record.msg.startswith(
+    (
+      'inconsistent references in translated message',
+      'inconsistent term references in translated message',
+    )
+  )
+
+
+_i18n_logger = logging.getLogger('sphinx')
+_i18n_logger.addFilter(_i18n_warning_filter)
 
 # -- Options for HTML output ----------------------------------------------
 
@@ -236,7 +252,7 @@ html_static_path = ['_static']
 html_show_sphinx = False
 
 # If true, "(C) Copyright ..." is shown in the HTML footer. Default is True.
-html_show_copyright = False
+#html_show_copyright = True
 
 # If true, an OpenSearch description file will be output, and all pages will
 # contain a <link> tag referring to it.  The value of this option must be the
@@ -258,7 +274,7 @@ html_show_copyright = False
 
 # The name of a javascript file (relative to the configuration directory) that
 # implements a search results scorer. If empty, the default will be used.
-html_search_scorer = '_static/scorer.js'
+html_search_scorer = os.path.join(os.path.dirname(__file__), '_static/scorer.js')
 
 html_js_files = [
   'custom.js',

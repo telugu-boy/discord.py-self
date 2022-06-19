@@ -24,34 +24,45 @@ DEALINGS IN THE SOFTWARE.
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Tuple, Type, TypeVar, TYPE_CHECKING, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, TYPE_CHECKING, Union
 
 import discord.abc
 from .asset import Asset
 from .colour import Colour
-from .enums import CommandType, DefaultAvatar, HypeSquadHouse, PremiumType, RelationshipAction, RelationshipType, try_enum, UserFlags
-from .errors import ClientException, InvalidArgument, NotFound
-from .flags import PublicUserFlags
-from .iterators import FakeCommandIterator
+from .enums import (
+    Locale,
+    HypeSquadHouse,
+    PremiumType,
+    RelationshipAction,
+    RelationshipType,
+    try_enum,
+)
+from .errors import ClientException, NotFound
+from .flags import PublicUserFlags, PrivateUserFlags, PremiumUsageFlags, PurchasedFlags
 from .object import Object
 from .relationship import Relationship
 from .settings import UserSettings
 from .utils import _bytes_to_base64_data, _get_as_snowflake, cached_slot_property, copy_doc, snowflake_time, MISSING
 
 if TYPE_CHECKING:
+    from typing_extensions import Self
+
     from datetime import datetime
 
-    from .abc import Snowflake as _Snowflake
+    from .abc import Snowflake as _Snowflake, T as ConnectReturn
     from .calls import PrivateCall
     from .channel import DMChannel
-    from .guild import Guild
+    from .client import Client
     from .member import VoiceState
     from .message import Message
     from .profile import UserProfile
     from .state import ConnectionState
     from .types.channel import DMChannel as DMChannelPayload
+    from .types.user import (
+        PartialUser as PartialUserPayload,
+        User as UserPayload,
+    )
     from .types.snowflake import Snowflake
-    from .types.user import User as UserPayload
 
 
 __all__ = (
@@ -60,11 +71,32 @@ __all__ = (
     'Note',
 )
 
-BU = TypeVar('BU', bound='BaseUser')
-
 
 class Note:
-    """Represents a Discord note."""
+    """Represents a Discord note.
+
+    .. container:: operations
+
+        .. describe:: x == y
+            Checks if two notes are equal.
+
+        .. describe:: x != y
+            Checks if two notes are not equal.
+
+        .. describe:: hash(x)
+            Returns the note's hash.
+
+        .. describe:: str(x)
+            Returns the note's content.
+            Raises :exc:`ClientException` if the note is not fetched.
+
+        .. describe:: bool(x)
+            Returns the note's content as a boolean.
+
+        .. describe:: len(x)
+            Returns the note's length.
+    """
+
     __slots__ = ('_state', '_note', '_user_id', '_user')
 
     def __init__(
@@ -80,6 +112,8 @@ class Note:
     def note(self) -> Optional[str]:
         """Returns the note.
 
+        There is an alias for this called :attr:`value`.
+
         Raises
         -------
         ClientException
@@ -89,13 +123,22 @@ class Note:
             raise ClientException('Note is not fetched')
         return self._note
 
+    @property
+    def value(self) -> Optional[str]:
+        """Returns the note.
+
+        This is an alias of :attr:`note`.
+
+        Raises
+        -------
+        ClientException
+            Attempted to access note without fetching it.
+        """
+        return self.note
+
     @cached_slot_property('_user')
     def user(self) -> _Snowflake:
-        """:class:`Snowflake`: Returns the :class:`User` the note belongs to.
-
-        If the user isn't in the cache, it returns a
-        :class:`Object` instead.
-        """
+        """:class:`~abc.Snowflake`: Returns the :class:`User` or :class:`Object` the note belongs to."""
         user_id = self._user_id
 
         user = self._state.get_user(user_id)
@@ -151,6 +194,14 @@ class Note:
         """
         await self.edit(None)
 
+    def __repr__(self) -> str:
+        base = f'<Note user={self.user!r}'
+        note = self._note
+        if note is not MISSING:
+            note = note or ''
+            base += f' note={note!r}'
+        return base + '>'
+
     def __str__(self) -> str:
         note = self._note
         if note is MISSING:
@@ -160,33 +211,27 @@ class Note:
         else:
             return note
 
-    def __repr__(self) -> str:
-        base = f'<Note user={self.user!r}'
-        note = self._note
-        if note is not MISSING:
-            note = note or '""'
-            base += f' note={note}'
-        return base + '>'
-
-    def __len__(self) -> int:
-        if (note := self._note):
-            return len(note)
-        return 0
-
-    def __eq__(self, other: Note) -> bool:
-        try:
-            return isinstance(other, Note) and self._note == other._note and self._user_id == other._user_id
-        except TypeError:
-            return False
-
-    def __ne__(self, other: Note) -> bool:
-        return not self.__eq__(other)
-
     def __bool__(self) -> bool:
         try:
             return bool(self._note)
         except TypeError:
             return False
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, Note) and self._note == other._note and self._user_id == other._user_id
+
+    def __ne__(self, other: object) -> bool:
+        if isinstance(other, Note):
+            return self._note != other._note or self._user_id != other._user_id
+        return True
+
+    def __hash__(self) -> int:
+        return hash((self._note, self._user_id))
+
+    def __len__(self) -> int:
+        if note := self._note:
+            return len(note)
+        return 0
 
 
 class _UserTag:
@@ -217,10 +262,10 @@ class BaseUser(_UserTag):
         _state: ConnectionState
         _avatar: Optional[str]
         _banner: Optional[str]
-        _accent_colour: Optional[str]
+        _accent_colour: Optional[int]
         _public_flags: int
 
-    def __init__(self, *, state: ConnectionState, data: UserPayload) -> None:
+    def __init__(self, *, state: ConnectionState, data: Union[UserPayload, PartialUserPayload]) -> None:
         self._state = state
         self._update(data)
 
@@ -233,16 +278,16 @@ class BaseUser(_UserTag):
     def __str__(self) -> str:
         return f'{self.name}#{self.discriminator}'
 
-    def __eq__(self, other: Any) -> bool:
+    def __eq__(self, other: object) -> bool:
         return isinstance(other, _UserTag) and other.id == self.id
 
-    def __ne__(self, other: Any) -> bool:
+    def __ne__(self, other: object) -> bool:
         return not self.__eq__(other)
 
     def __hash__(self) -> int:
         return self.id >> 22
 
-    def _update(self, data: UserPayload) -> None:
+    def _update(self, data: Union[UserPayload, PartialUserPayload]) -> None:
         self.name = data['username']
         self.id = int(data['id'])
         self.discriminator = data['discriminator']
@@ -254,7 +299,7 @@ class BaseUser(_UserTag):
         self.system = data.get('system', False)
 
     @classmethod
-    def _copy(cls: Type[BU], user: BU) -> BU:
+    def _copy(cls, user: Self) -> Self:
         self = cls.__new__(cls)  # bypass __init__
 
         self.name = user.name
@@ -277,6 +322,7 @@ class BaseUser(_UserTag):
             'discriminator': self.discriminator,
             'bot': self.bot,
             'system': self.system,
+            'public_flags': self._public_flags,
         }
 
     @property
@@ -303,7 +349,7 @@ class BaseUser(_UserTag):
     @property
     def default_avatar(self) -> Asset:
         """:class:`Asset`: Returns the default avatar for a given user. This is calculated by the user's discriminator."""
-        return Asset._from_default_avatar(self._state, int(self.discriminator) % len(DefaultAvatar))
+        return Asset._from_default_avatar(self._state, int(self.discriminator) % 5)
 
     @property
     def display_avatar(self) -> Asset:
@@ -440,6 +486,9 @@ class ClientUser(BaseUser):
 
             Returns the user's name with discriminator.
 
+    .. versionchanged:: 2.0
+        :attr:`Locale` is now a :class:`Locale` instead of a Optional[:class:`str`].
+
     Attributes
     -----------
     name: :class:`str`
@@ -450,15 +499,12 @@ class ClientUser(BaseUser):
         The user's discriminator.
     bio: Optional[:class:`str`]
         The user's "about me" field. Could be ``None``.
-    avatar: Optional[:class:`str`]
-        The avatar hash the user has. Could be ``None``.
     bot: :class:`bool`
         Specifies if the user is a bot account.
     system: :class:`bool`
         Specifies if the user is a system user (i.e. represents Discord officially).
 
         .. versionadded:: 1.3
-
     verified: :class:`bool`
         Specifies if the user's email is verified.
     email: Optional[:class:`str`]
@@ -467,17 +513,16 @@ class ClientUser(BaseUser):
         The phone number of the user.
 
         .. versionadded:: 1.9
-
-    locale: Optional[:class:`str`]
+    locale: Optional[:class:`Locale`]
         The IETF language tag used to identify the language the user is using.
     mfa_enabled: :class:`bool`
         Specifies if the user has MFA turned on and working.
-    premium: :class:`bool`
-        Specifies if the user is a premium user (i.e. has Discord Nitro).
     premium_type: Optional[:class:`PremiumType`]
         Specifies the type of premium a user has (i.e. Nitro or Nitro Classic). Could be None if the user is not premium.
     note: :class:`Note`
         The user's note. Not pre-fetched.
+
+        .. versionadded:: 1.9
     nsfw_allowed: :class:`bool`
         Specifies if the user should be allowed to access NSFW content.
 
@@ -485,6 +530,7 @@ class ClientUser(BaseUser):
     """
 
     __slots__ = (
+        '__weakref__',
         'locale',
         '_flags',
         'verified',
@@ -493,25 +539,26 @@ class ClientUser(BaseUser):
         'phone',
         'premium_type',
         'note',
-        'premium',
         'bio',
         'nsfw_allowed',
+        '_purchased_flags',
+        '_premium_usage_flags',
     )
 
     if TYPE_CHECKING:
         verified: bool
         email: Optional[str]
         phone: Optional[int]
-        locale: Optional[str]
+        locale: Locale
         _flags: int
         mfa_enabled: bool
-        premium: bool
         premium_type: Optional[PremiumType]
         bio: Optional[str]
         nsfw_allowed: bool
 
     def __init__(self, *, state: ConnectionState, data: UserPayload) -> None:
-        super().__init__(state=state, data=data)
+        self._state = state
+        self._full_update(data)
         self.note: Note = Note(state, self.id)
 
     def __repr__(self) -> str:
@@ -520,20 +567,23 @@ class ClientUser(BaseUser):
             f' bot={self.bot} verified={self.verified} mfa_enabled={self.mfa_enabled} premium={self.premium}>'
         )
 
-    def _update(self, data: UserPayload) -> None:
-        super()._update(data)
+    def _full_update(self, data: UserPayload) -> None:
+        self._update(data)
         self.verified = data.get('verified', False)
         self.email = data.get('email')
         self.phone = _get_as_snowflake(data, 'phone')
-        self.locale = data.get('locale')
+        self.locale = try_enum(Locale, data.get('locale', 'en-US'))
         self._flags = data.get('flags', 0)
+        self._purchased_flags = data.get('purchased_flags', 0)
+        self._premium_usage_flags = data.get('premium_usage_flags', 0)
         self.mfa_enabled = data.get('mfa_enabled', False)
-        self.premium = data.get('premium', False)
-        self.premium_type = try_enum(PremiumType, data.get('premium_type', None))
+        self.premium_type = try_enum(PremiumType, data['premium_type']) if 'premium_type' in data else None
+        self.bio = data.get('bio')
+        self.nsfw_allowed = data.get('nsfw_allowed', False)
         self.bio = data.get('bio') or None
         self.nsfw_allowed = data.get('nsfw_allowed', False)
 
-    def get_relationship(self, user_id: int) -> Relationship:
+    def get_relationship(self, user_id: int) -> Optional[Relationship]:
         """Retrieves the :class:`Relationship` if applicable.
 
         Parameters
@@ -549,24 +599,68 @@ class ClientUser(BaseUser):
         return self._state._relationships.get(user_id)
 
     @property
+    def premium(self) -> bool:
+        """Indicates if the user is a premium user (i.e. has Discord Nitro)."""
+        return self.premium_type is not None
+
+    @property
     def relationships(self) -> List[Relationship]:
-        """List[:class:`User`]: Returns all the relationships that the user has."""
+        """List[:class:`Relationship`]: Returns all the relationships that the user has.
+
+        .. versionchanged:: 2.0
+            This now returns a :class:`Relationship`.
+        """
         return list(self._state._relationships.values())
 
     @property
     def friends(self) -> List[Relationship]:
-        r"""List[:class:`User`]: Returns all the users that the user is friends with."""
-        return [r.user for r in self._state._relationships.values() if r.type is RelationshipType.friend]
+        r"""List[:class:`Relationship`]: Returns all the users that the user is friends with.
+
+        .. versionchanged:: 2.0
+            This now returns a :class:`Relationship`.
+        """
+        return [r for r in self._state._relationships.values() if r.type is RelationshipType.friend]
 
     @property
     def blocked(self) -> List[Relationship]:
-        r"""List[:class:`User`]: Returns all the users that the user has blocked."""
-        return [r.user for r in self._state._relationships.values() if r.type is RelationshipType.blocked]
+        r"""List[:class:`Relationship`]: Returns all the users that the user has blocked.
+
+        .. versionchanged:: 2.0
+            This now returns a :class:`Relationship`.
+        """
+        return [r for r in self._state._relationships.values() if r.type is RelationshipType.blocked]
 
     @property
     def settings(self) -> Optional[UserSettings]:
-        """Optional[:class:`UserSettings`]: Returns the user's settings."""
+        """Optional[:class:`UserSettings`]: Returns the user's settings.
+
+        .. versionadded:: 1.9
+        """
         return self._state.settings
+
+    @property
+    def flags(self) -> PrivateUserFlags:
+        """:class:`PrivateUserFlags`: Returns the user's flags (including private).
+
+        .. versionadded:: 2.0
+        """
+        return PrivateUserFlags._from_value(self._flags)
+
+    @property
+    def premium_usage_flags(self) -> PremiumUsageFlags:
+        """:class:`PremiumUsageFlags`: Returns the user's premium usage flags.
+
+        .. versionadded:: 2.0
+        """
+        return PremiumUsageFlags._from_value(self._premium_usage_flags)
+
+    @property
+    def purchased_flags(self) -> PurchasedFlags:
+        """:class:`PurchasedFlags`: Returns the user's purchased flags.
+
+        .. versionadded:: 2.0
+        """
+        return PurchasedFlags._from_value(self._purchased_flags)
 
     async def edit(
         self,
@@ -597,6 +691,10 @@ class ClientUser(BaseUser):
 
         .. versionchanged:: 2.0
             The edit is no longer in-place, instead the newly edited client user is returned.
+
+        .. versionchanged:: 2.0
+            This function will now raise :exc:`ValueError` instead of
+            ``InvalidArgument``.
 
         Parameters
         -----------
@@ -633,7 +731,7 @@ class ClientUser(BaseUser):
         ------
         HTTPException
             Editing your profile failed.
-        ClientException
+        ValueError
             Password was not passed when it was required.
             `house` field was not a :class:`HypeSquadHouse`.
             `date_of_birth` field was not a :class:`datetime.datetime`.
@@ -648,7 +746,7 @@ class ClientUser(BaseUser):
 
         if any(x is not MISSING for x in ('new_password', 'email', 'username', 'discriminator')):
             if password is MISSING:
-                raise ClientException('Password is required')
+                raise ValueError('Password is required')
             args['password'] = password
 
         if avatar is not MISSING:
@@ -668,7 +766,7 @@ class ClientUser(BaseUser):
             if colour is None:
                 args['accent_color'] = colour
             elif not isinstance(colour, Colour):
-                raise ClientException('`accent_colo(u)r` parameter was not a Colour')
+                raise ValueError('`accent_colo(u)r` parameter was not a Colour')
             else:
                 args['accent_color'] = accent_color.value
 
@@ -689,7 +787,7 @@ class ClientUser(BaseUser):
 
         if date_of_birth is not MISSING:
             if not isinstance(date_of_birth, datetime):
-                raise ClientException('`date_of_birth` parameter was not a datetime')
+                raise ValueError('`date_of_birth` parameter was not a datetime')
             args['date_of_birth'] = date_of_birth.strftime('%F')
 
         http = self._state.http
@@ -698,7 +796,7 @@ class ClientUser(BaseUser):
             if house is None:
                 await http.leave_hypesquad_house()
             elif not isinstance(house, HypeSquadHouse):
-                raise ClientException('`house` parameter was not a HypeSquadHouse')
+                raise ValueError('`house` parameter was not a HypeSquadHouse')
             else:
                 await http.change_hypesquad_house(house.value)
 
@@ -770,6 +868,10 @@ class ClientUser(BaseUser):
         if theme:
             payload['theme'] = theme.value
 
+        locale = kwargs.pop('locale', None)
+        if locale:
+            payload['locale'] = str(locale)
+
         payload.update(kwargs)
 
         state = self._state
@@ -812,33 +914,16 @@ class User(BaseUser, discord.abc.Connectable, discord.abc.Messageable):
         Specifies if the user is a system user (i.e. represents Discord officially).
     """
 
-    __slots__ = ('_stored',)
-
-    def __init__(self, *, state: ConnectionState, data: UserPayload) -> None:
-        super().__init__(state=state, data=data)
-        self._stored: bool = False
+    __slots__ = ('__weakref__',)
 
     def __repr__(self) -> str:
         return f'<{self.__class__.__name__} id={self.id} name={self.name!r} discriminator={self.discriminator!r} bot={self.bot} system={self.system}>'
 
-    def __del__(self) -> None:
-        try:
-            if self._stored:
-                self._state.deref_user(self.id)
-        except Exception:
-            pass
-
-    @classmethod
-    def _copy(cls, user: User):
-        self = super()._copy(user)
-        self._stored = False
-        return self
-
     def _get_voice_client_key(self) -> Tuple[int, str]:
-        return self._state.self_id, 'self_id'
+        return self._state.self_id, 'self_id'  # type: ignore # self_id is always set at this point
 
     def _get_voice_state_pair(self) -> Tuple[int, int]:
-        return self._state.self_id, self.dm_channel.id
+        return self._state.self_id, self.dm_channel.id  # type: ignore # self_id is always set at this point
 
     async def _get_channel(self) -> DMChannel:
         ch = await self.create_dm()
@@ -855,21 +940,28 @@ class User(BaseUser, discord.abc.Connectable, discord.abc.Messageable):
 
     @property
     def call(self) -> Optional[PrivateCall]:
+        """Optional[:class:`PrivateCall`]: Returns the call associated with this user if it exists."""
         return getattr(self.dm_channel, 'call', None)
 
     @property
     def relationship(self) -> Optional[Relationship]:
         """Optional[:class:`Relationship`]: Returns the :class:`Relationship` with this user if applicable, ``None`` otherwise."""
-        return self._state.user.get_relationship(self.id)
+        return self._state.user.get_relationship(self.id)  # type: ignore # user is always present when logged in
 
-    async def connect(self, *, ring=True, **kwargs):
+    @copy_doc(discord.abc.Connectable.connect)
+    async def connect(
+        self,
+        *,
+        timeout: float = 60.0,
+        reconnect: bool = True,
+        cls: Callable[[Client, discord.abc.Connectable], ConnectReturn] = MISSING,
+        ring: bool = True,
+    ) -> ConnectReturn:
         channel = await self._get_channel()
-        call = self.call
-        if call is not None:
-            ring = False
-        await super().connect(_channel=channel, **kwargs)
-        if ring:
+        call = channel.call
+        if call is None and ring:
             await channel._initial_ring()
+        return await super().connect(timeout=timeout, reconnect=reconnect, cls=cls, _channel=channel)
 
     async def create_dm(self) -> DMChannel:
         """|coro|
@@ -891,69 +983,6 @@ class User(BaseUser, discord.abc.Connectable, discord.abc.Messageable):
         state = self._state
         data: DMChannelPayload = await state.http.start_private_message(self.id)
         return state.add_dm_channel(data)
-
-    def user_commands(
-        self,
-        query: Optional[str] = None,
-        *,
-        limit: Optional[int] = None,
-        command_ids: Optional[List[int]] = [],
-        **_,
-    ):
-        """Returns an iterator that allows you to see what user commands are available to use on this user.
-
-        Only available on bots.
-
-        .. note::
-
-            All parameters here are faked, as the only way to get commands in a DM is to fetch them all at once.
-            Because of this, some are silently ignored. The ones below currently work.
-            It is recommended to not pass any parameters to this iterator.
-
-        Examples
-        ---------
-
-        Usage ::
-
-            async for command in user.user_commands():
-                print(command.name)
-
-        Flattening into a list ::
-
-            commands = await user.user_commands().flatten()
-            # commands is now a list of UserCommand...
-
-        All parameters are optional.
-
-        Parameters
-        ----------
-        query: Optional[:class:`str`]
-            The query to search for.
-        limit: Optional[:class:`int`]
-            The maximum number of commands to send back. Defaults to ``None`` to iterate over all results. Must be at least 1.
-        command_ids: Optional[List[:class:`int`]]
-            List of command IDs to search for. If the command doesn't exist it won't be returned.
-
-        Raises
-        ------
-        :exc:`.InvalidArgument`
-            The user is not a bot.
-            The limit was not > 0.
-            Both query and command_ids were passed.
-        :exc:`.HTTPException`
-            Getting the commands failed.
-
-        Yields
-        -------
-        :class:`.UserCommand`
-            A user command.
-        """
-        if query and command_ids:
-            raise InvalidArgument('Cannot specify both query and command_ids')
-        if limit is not None and limit <= 0:
-            raise InvalidArgument('limit must be > 0')
-
-        return FakeCommandIterator(self, CommandType.user, query, limit, command_ids)
 
     def is_friend(self) -> bool:
         """:class:`bool`: Checks if the user is your friend."""
@@ -981,7 +1010,9 @@ class User(BaseUser, discord.abc.Connectable, discord.abc.Messageable):
         HTTPException
             Blocking the user failed.
         """
-        await self._state.http.add_relationship(self.id, type=RelationshipType.blocked.value, action=RelationshipAction.block)
+        await self._state.http.add_relationship(
+            self.id, type=RelationshipType.blocked.value, action=RelationshipAction.block
+        )
 
     async def unblock(self) -> None:
         """|coro|
@@ -1025,9 +1056,7 @@ class User(BaseUser, discord.abc.Connectable, discord.abc.Messageable):
         """
         await self._state.http.send_friend_request(self.name, self.discriminator)
 
-    async def profile(
-        self, *, with_mutuals: bool = True, fetch_note: bool = True
-    ) -> UserProfile:
+    async def profile(self, *, with_mutuals: bool = True, fetch_note: bool = True) -> UserProfile:
         """|coro|
 
         Gets the user's profile.
@@ -1036,7 +1065,7 @@ class User(BaseUser, discord.abc.Connectable, discord.abc.Messageable):
         ------------
         with_mutuals: :class:`bool`
             Whether to fetch mutual guilds and friends.
-            This fills in :attr:`mutual_guilds` & :attr:`mutual_friends`.
+            This fills in :attr:`.UserProfile.mutual_guilds` & :attr:`.UserProfile.mutual_friends`.
         fetch_note: :class:`bool`
             Whether to pre-fetch the user's note.
 
@@ -1060,7 +1089,7 @@ class User(BaseUser, discord.abc.Connectable, discord.abc.Messageable):
 
         if with_mutuals:
             if not data['user'].get('bot', False):
-                data['mutual_friends'] = await self.http.get_mutual_friends(user_id)
+                data['mutual_friends'] = await self._state.http.get_mutual_friends(user_id)
             else:
                 data['mutual_friends'] = []
 

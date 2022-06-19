@@ -23,15 +23,13 @@ DEALINGS IN THE SOFTWARE.
 """
 
 from __future__ import annotations
-from typing import Any, Dict, List, Optional, TypeVar, Union, TYPE_CHECKING
+from typing import Any, Dict, List, Optional, Union, TYPE_CHECKING
 
 from .asset import Asset
 from .permissions import Permissions
-from .errors import InvalidArgument
 from .colour import Colour
 from .mixins import Hashable
 from .utils import snowflake_time, _get_as_snowflake, MISSING, _bytes_to_base64_data
-from .partial_emoji import PartialEmoji
 
 __all__ = (
     'RoleTags',
@@ -48,6 +46,7 @@ if TYPE_CHECKING:
     from .guild import Guild
     from .member import Member
     from .state import ConnectionState
+    from .abc import Snowflake
 
 
 class RoleTags:
@@ -101,9 +100,6 @@ class RoleTags:
             f'<RoleTags bot_id={self.bot_id} integration_id={self.integration_id} '
             f'premium_subscriber={self.is_premium_subscriber()}>'
         )
-
-
-R = TypeVar('R', bound='Role')
 
 
 class Role(Hashable):
@@ -165,6 +161,18 @@ class Role(Hashable):
             compare for roles in the hierarchy is using the comparison
             operators on the role objects themselves.
 
+    unicode_emoji: Optional[:class:`str`]
+        The role's unicode emoji, if available.
+
+        .. note::
+
+            If :attr:`icon` is not ``None``, it is displayed as role icon
+            instead of the unicode emoji under this attribute.
+
+            If you want the icon that a role has displayed, consider using :attr:`display_icon`.
+
+        .. versionadded:: 2.0
+
     managed: :class:`bool`
         Indicates if the role is managed by the guild through some form of
         integrations such as Twitch.
@@ -180,14 +188,14 @@ class Role(Hashable):
         '_permissions',
         '_colour',
         'position',
+        '_icon',
+        'unicode_emoji',
         'managed',
         'mentionable',
         'hoist',
         'guild',
         'tags',
         '_state',
-        '_icon',
-        '_emoji',
     )
 
     def __init__(self, *, guild: Guild, state: ConnectionState, data: RolePayload):
@@ -202,7 +210,7 @@ class Role(Hashable):
     def __repr__(self) -> str:
         return f'<Role id={self.id} name={self.name!r}>'
 
-    def __lt__(self: R, other: R) -> bool:
+    def __lt__(self, other: object) -> bool:
         if not isinstance(other, Role) or not isinstance(self, Role):
             return NotImplemented
 
@@ -223,16 +231,16 @@ class Role(Hashable):
 
         return False
 
-    def __le__(self: R, other: R) -> bool:
+    def __le__(self, other: Any) -> bool:
         r = Role.__lt__(other, self)
         if r is NotImplemented:
             return NotImplemented
         return not r
 
-    def __gt__(self: R, other: R) -> bool:
+    def __gt__(self, other: Any) -> bool:
         return Role.__lt__(other, self)
 
-    def __ge__(self: R, other: R) -> bool:
+    def __ge__(self, other: object) -> bool:
         r = Role.__lt__(self, other)
         if r is NotImplemented:
             return NotImplemented
@@ -244,10 +252,10 @@ class Role(Hashable):
         self.position: int = data.get('position', 0)
         self._colour: int = data.get('color', 0)
         self.hoist: bool = data.get('hoist', False)
+        self._icon: Optional[str] = data.get('icon')
+        self.unicode_emoji: Optional[str] = data.get('unicode_emoji')
         self.managed: bool = data.get('managed', False)
         self.mentionable: bool = data.get('mentionable', False)
-        self._icon: Optional[str] = data.get('icon')
-        self._emoji: Optional[str] = data.get('unicode_emoji')
         self.tags: Optional[RoleTags]
 
         try:
@@ -304,6 +312,30 @@ class Role(Hashable):
         return self.colour
 
     @property
+    def icon(self) -> Optional[Asset]:
+        """Optional[:class:`.Asset`]: Returns the role's icon asset, if available.
+
+        .. note::
+            If this is ``None``, the role might instead have unicode emoji as its icon
+            if :attr:`unicode_emoji` is not ``None``.
+
+            If you want the icon that a role has displayed, consider using :attr:`display_icon`.
+
+        .. versionadded:: 2.0
+        """
+        if self._icon is None:
+            return None
+        return Asset._from_icon(self._state, self.id, self._icon, path='role')
+
+    @property
+    def display_icon(self) -> Optional[Union[Asset, str]]:
+        """Optional[Union[:class:`.Asset`, :class:`str`]]: Returns the role's display icon, if available.
+
+        .. versionadded:: 2.0
+        """
+        return self.icon or self.unicode_emoji
+
+    @property
     def created_at(self) -> datetime.datetime:
         """:class:`datetime.datetime`: Returns the role's creation time in UTC."""
         return snowflake_time(self.id)
@@ -325,35 +357,15 @@ class Role(Hashable):
         role_id = self.id
         return [member for member in all_members if member._roles.has(role_id)]
 
-    @property
-    def icon(self) -> Optional[Asset]:
-        """Optional[:class:`Asset`]: Returns the role's icon asset, if available.
-
-        .. versionadded:: 2.0
-        """
-        if (icon := self._icon) is None:
-            return
-        return Asset._from_role_icon(self._state, self.id, icon)
-
-    @property
-    def emoji(self) -> Optional[PartialEmoji]:
-        """Optional[:class:`PartialEmoji`] Returns the role's unicode emoji, if available.
-
-        .. versionadded:: 2.0
-        """
-        if (emoji := self._emoji) is None:
-            return
-        return PartialEmoji.from_str(emoji)
-
     async def _move(self, position: int, reason: Optional[str]) -> None:
         if position <= 0:
-            raise InvalidArgument("Cannot move role to position 0 or below")
+            raise ValueError("Cannot move role to position 0 or below")
 
         if self.is_default():
-            raise InvalidArgument("Cannot move default role")
+            raise ValueError("Cannot move default role")
 
         if self.position == position:
-            return  # Save discord the extra request.
+            return  # Save Discord the extra request
 
         http = self._state.http
 
@@ -368,6 +380,121 @@ class Role(Hashable):
         payload: List[RolePositionUpdate] = [{"id": z[0], "position": z[1]} for z in zip(roles, change_range)]
         await http.move_role_position(self.guild.id, payload, reason=reason)
 
+    async def fetch_members(self, *, subscribe: bool = False) -> List[Member]:
+        """|coro|
+
+        Retrieves all members with this role.
+        This is a partial websocket operation.
+
+        .. versionadded:: 2.0
+
+        .. note::
+            This can only return up to 100 of the first members, and cannot be used on the default role.
+
+        Parameters
+        ----------
+        subscribe: :class:`bool`
+            Whether to subscribe to the resulting members. This will keep their info and presence updated.
+            This requires another request, and defaults to ``False``.
+
+        Raises
+        ------
+        HTTPException
+            Fetching the members failed.
+        TypeError
+            This role is the default role.
+        asyncio.TimeoutError
+            The operation timed out.
+
+        Returns
+        -------
+        List[:class:`Member`]
+            The members with this role.
+        """
+        if self.is_default():
+            raise TypeError('Cannot fetch the default role\'s members')
+
+        guild = self.guild
+        data = await self._state.http.get_role_members(guild.id, self.id)
+        return await guild.query_members(user_ids=data, subscribe=subscribe)  # type: ignore # user_ids is cast to str anyway
+
+    async def add_members(self, *members: Snowflake, reason: Optional[str] = None) -> List[Member]:
+        r"""|coro|
+
+        Adds a number of :class:`Member`\s to this role.
+
+        You must have the :attr:`~Permissions.manage_roles` permission to
+        use this, and the current :class:`Role` must appear lower in the list
+        of roles than the highest role of the member.
+
+        Parameters
+        -----------
+        \*members: :class:`abc.Snowflake`
+            An argument list of :class:`abc.Snowflake` representing a :class:`Member`
+            to add to the role.
+        reason: Optional[:class:`str`]
+            The reason for adding these members. Shows up on the audit log.
+
+        Raises
+        -------
+        Forbidden
+            You do not have permissions to add these members.
+        HTTPException
+            Adding members failed.
+        TypeError
+            The role is the default role.
+
+        Returns
+        --------
+        List[:class:`Member`]
+            The list of members that were added to the role.
+        """
+        if self.is_default():
+            raise TypeError('Cannot add members to the default role')
+
+        from .member import Member  # Circular import
+
+        state = self._state
+        guild = self.guild
+
+        data = await state.http.add_members_to_role(guild.id, self.id, [m.id for m in members], reason=reason)
+        return [Member(data=m, state=state, guild=guild) for m in data.values()]
+
+    async def remove_roles(self, *members: Snowflake, reason: Optional[str] = None) -> None:
+        r"""|coro|
+
+        Removes :class:`Member`\s from this role.
+
+        You must have the :attr:`~Permissions.manage_roles` permission to
+        use this, and the current :class:`Role` must appear lower in the list
+        of roles than the highest role of the member.
+
+        Parameters
+        -----------
+        \*members: :class:`abc.Snowflake`
+            An argument list of :class:`abc.Snowflake` representing a :class:`Member`
+            to remove from the role.
+        reason: Optional[:class:`str`]
+            The reason for adding these members. Shows up on the audit log.
+
+        Raises
+        -------
+        Forbidden
+            You do not have permissions to remove these members.
+        HTTPException
+            Removing the members failed.
+        TypeError
+            The role is the default role.
+        """
+        if self.is_default():
+            raise TypeError('Cannot remove members from the default role')
+
+        req = self._state.http.remove_role
+        guild_id = self.guild.id
+        role_id = self.id
+        for member in members:
+            await req(guild_id, member.id, role_id, reason=reason)
+
     async def edit(
         self,
         *,
@@ -376,10 +503,11 @@ class Role(Hashable):
         colour: Union[Colour, int] = MISSING,
         color: Union[Colour, int] = MISSING,
         hoist: bool = MISSING,
+        display_icon: Optional[Union[bytes, str]] = MISSING,
+        icon: Optional[bytes] = MISSING,
+        unicode_emoji: Optional[str] = MISSING,
         mentionable: bool = MISSING,
         position: int = MISSING,
-        icon: Optional[bytes] = MISSING,
-        emoji: Optional[PartialEmoji] = MISSING,
         reason: Optional[str] = MISSING,
     ) -> Optional[Role]:
         """|coro|
@@ -397,6 +525,13 @@ class Role(Hashable):
         .. versionchanged:: 2.0
             Edits are no longer in-place, the newly edited role is returned instead.
 
+        .. versionadded:: 2.0
+            The ``display_icon``, ``icon``, and ``unicode_emoji`` keyword-only parameters were added.
+
+        .. versionchanged:: 2.0
+            This function will now raise :exc:`ValueError` instead of
+            ``InvalidArgument``.
+
         Parameters
         -----------
         name: :class:`str`
@@ -407,16 +542,26 @@ class Role(Hashable):
             The new colour to change to. (aliased to color as well)
         hoist: :class:`bool`
             Indicates if the role should be shown separately in the member list.
+        display_icon: Optional[Union[:class:`bytes`, :class:`str`]]
+            A :term:`py:bytes-like object` representing the icon
+            or :class:`str` representing unicode emoji that should be used as a role icon.
+            Could be ``None`` to denote removal of the icon.
+            Only PNG/JPEG is supported.
+            This is only available to guilds that contain ``ROLE_ICONS`` in :attr:`Guild.features`.
+        icon: Optional[:class:`bytes`]
+            A :term:`py:bytes-like object` representing the icon that should be used as a role icon.
+            Could be ``None`` to denote removal of the icon.
+            Only PNG/JPEG is supported.
+            This is only available to guilds that contain ``ROLE_ICONS`` in :attr:`Guild.features`.
+        unicode_emoji: Optional[:class:`str`]
+            A unicode emoji that should be used as a role icon.
+            :attr:`icon` takes precedence over this, but both can be set.
+            This is only available to guilds that contain ``ROLE_ICONS`` in :attr:`Guild.features`.
         mentionable: :class:`bool`
             Indicates if the role should be mentionable by others.
         position: :class:`int`
             The new role's position. This must be below your top role's
             position or it will fail.
-        icon: Optional[:class:`bytes`]
-            A :term:`py:bytes-like object` representing the icon. Only PNG/JPEG is supported.
-            Could be ``None`` to denote removal of the icon.
-        emoji: Optional[:class:`PartialEmoji`]
-            An emoji to show next to the role. Only unicode emojis are supported.
         reason: Optional[:class:`str`]
             The reason for editing this role. Shows up on the audit log.
 
@@ -426,16 +571,19 @@ class Role(Hashable):
             You do not have permissions to change the role.
         HTTPException
             Editing the role failed.
-        InvalidArgument
-            An invalid position was given or the default
-            role was asked to be moved.
-            A custom emoji was passed to ``emoji``.
+        ValueError
+            An invalid position was given, the default
+            role was asked to be moved, or both ``display_icon``
+            and ``icon``/``unicode_emoji`` were set.
 
         Returns
         --------
         :class:`Role`
             The newly edited role.
         """
+        if display_icon and (icon or unicode_emoji):
+            raise ValueError('Cannot set both icon/unicode_emoji and display_icon')
+
         if position is not MISSING:
             await self._move(position, reason=reason)
 
@@ -458,8 +606,14 @@ class Role(Hashable):
         if hoist is not MISSING:
             payload['hoist'] = hoist
 
-        if mentionable is not MISSING:
-            payload['mentionable'] = mentionable
+        if display_icon is not MISSING:
+            if isinstance(display_icon, bytes):
+                payload['icon'] = _bytes_to_base64_data(display_icon)
+            elif display_icon:
+                payload['unicode_emoji'] = display_icon
+            else:
+                payload['icon'] = None
+                payload['unicode_emoji'] = None
 
         if icon is not MISSING:
             if icon is None:
@@ -467,13 +621,14 @@ class Role(Hashable):
             else:
                 payload['icon'] = _bytes_to_base64_data(icon)
 
-        if emoji is not MISSING:
-            if emoji is None:
+        if unicode_emoji is not MISSING:
+            if unicode_emoji is None:
                 payload['unicode_emoji'] = None
-            elif emoji.id is not None:
-                raise InvalidArgument('emoji only supports unicode emojis')
             else:
-                payload['unicode_emoji'] = emoji.name
+                payload['unicode_emoji'] = unicode_emoji
+
+        if mentionable is not MISSING:
+            payload['mentionable'] = mentionable
 
         data = await self._state.http.edit_role(self.guild.id, self.id, reason=reason, **payload)
         return Role(guild=self.guild, data=data, state=self._state)

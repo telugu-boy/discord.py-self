@@ -4,64 +4,75 @@ Discord API Wrapper
 
 A basic wrapper for the Discord user API.
 
-:copyright: (c) 2015-present Rapptz
+:copyright: (c) 2015-present Rapptz and 2021-present Dolfies
 :license: MIT, see LICENSE for more details.
-
 """
 
 __title__ = 'discord.py-self'
 __author__ = 'Dolfies'
 __license__ = 'MIT'
-__copyright__ = 'Copyright 2015-present Rapptz'
-__version__ = '2.0.0a1'
+__copyright__ = 'Copyright 2015-present Rapptz and 2021-present Dolfies'
+__version__ = '2.0.0a2'
 
 __path__ = __import__('pkgutil').extend_path(__path__, __name__)
 
 import logging
-from typing import NamedTuple, Literal
+from typing import Literal, NamedTuple
 
-from .client import *
-from .appinfo import *
-from .user import *
-from .emoji import *
-from .partial_emoji import *
+from . import (
+    abc as abc,
+    opus as opus,
+    utils as utils,
+)
 from .activity import *
-from .channel import *
-from .guild import *
-from .flags import *
-from .member import *
-from .message import *
+from .appinfo import *
 from .asset import *
-from .errors import *
-from .permissions import *
-from .role import *
-from .file import *
-from .colour import *
-from .integrations import *
-from .invite import *
-from .template import *
-from .widget import *
-from .object import *
-from .reaction import *
-from . import utils, opus, abc
-from .enums import *
-from .embeds import *
-from .mentions import *
-from .player import *
-from .webhook import *
-from .voice_client import *
 from .audit_logs import *
-from .raw_models import *
-from .team import *
-from .sticker import *
-from .stage_instance import *
+from .calls import *
+from .channel import *
+from .client import *
+from .colour import *
+from .commands import *
 from .components import *
-from .threads import *
-from .relationship import *
+from .connections import *
+from .embeds import *
+from .emoji import *
+from .enums import *
+from .errors import *
+from .file import *
+from .flags import *
+from .guild import *
 from .guild_folder import *
-from .settings import *
+from .handlers import *
+from .integrations import *
+from .interactions import *
+from .invite import *
+from .member import *
+from .mentions import *
+from .message import *
+from .modal import *
+from .object import *
+from .partial_emoji import *
+from .permissions import *
+from .player import *
 from .profile import *
+from .raw_models import *
+from .reaction import *
+from .relationship import *
+from .role import *
+from .scheduled_event import *
+from .settings import *
+from .stage_instance import *
+from .sticker import *
+from .team import *
+from .template import *
+from .threads import *
+from .tracking import *
+from .user import *
+from .voice_client import *
+from .webhook import *
 from .welcome_screen import *
+from .widget import *
 
 
 class _VersionInfo(NamedTuple):
@@ -71,6 +82,10 @@ class _VersionInfo(NamedTuple):
     releaselevel: Literal['alpha', 'beta', 'candidate', 'final']
     serial: int
 
-version_info: _VersionInfo = _VersionInfo(major=2, minor=0, micro=0, releaselevel='alpha', serial=1)
+
+version_info: _VersionInfo = _VersionInfo(major=2, minor=0, micro=0, releaselevel='alpha', serial=2)
 
 logging.getLogger(__name__).addHandler(logging.NullHandler())
+
+
+del logging, NamedTuple, Literal, _VersionInfo

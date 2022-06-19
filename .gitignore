@@ -14,4 +14,6 @@ docs/crowdin.py
 *.jpg
 *.flac
 *.mo
+/.coverage
 *test.py
+backup/

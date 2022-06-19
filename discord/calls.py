@@ -21,35 +21,40 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
 FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 """
-
 from __future__ import annotations
 
 import datetime
-from typing import List, Optional, TYPE_CHECKING, Union
+from typing import Callable, Dict, List, Optional, Set, TYPE_CHECKING, Union
 
 from . import utils
-from .enums import VoiceRegion, try_enum
 from .errors import ClientException
-from .utils import MISSING
+from .utils import cached_slot_property, MISSING
 
 if TYPE_CHECKING:
-    from .abc import PrivateChannel
+    from .abc import Connectable, PrivateChannel, User as abcUser, Snowflake as abcSnowflake, T as ConnectReturn
     from .channel import DMChannel, GroupChannel
+    from .client import Client
     from .member import VoiceState
     from .message import Message
     from .state import ConnectionState
-    from .types.snowflake import Snowflake, SnowflakeList
-    from .types.voice import GuildVoiceState
     from .user import User
-    from .voice_client import VoiceProtocol
+
+    _PrivateChannel = Union[DMChannel, GroupChannel]
+
+__all__ = (
+    'CallMessage',
+    'PrivateCall',
+    'GroupCall',
+)
 
 
-def _running_only(func):
-    def decorator(self, *args, **kwargs):
+def _running_only(func: Callable):
+    def decorator(self: Call, *args, **kwargs):
         if self._ended:
             raise ClientException('Call is over')
         else:
             return func(self, *args, **kwargs)
+
     return decorator
 
 
@@ -62,16 +67,16 @@ class CallMessage:
     Attributes
     -----------
     ended_timestamp: Optional[:class:`datetime.datetime`]
-        A naive UTC datetime object that represents the time that the call has ended.
+        An aware UTC datetime object that represents the time that the call has ended.
     participants: List[:class:`User`]
         A list of users that participated in the call.
     message: :class:`Message`
         The message associated with this call message.
     """
 
-    def __init__(
-        self, message: Message, *, participants: List[User], ended_timestamp: str
-    ) -> None:
+    __slots__ = ('message', 'ended_timestamp', 'participants')
+
+    def __init__(self, message: Message, *, participants: List[User], ended_timestamp: str) -> None:
         self.message = message
         self.ended_timestamp = utils.parse_time(ended_timestamp)
         self.participants = participants
@@ -83,13 +88,13 @@ class CallMessage:
 
     @property
     def initiator(self) -> User:
-        """:class:`User`: Returns the user that started the call."""
-        return self.message.author
+        """:class:`.abc.User`: Returns the user that started the call."""
+        return self.message.author  # type: ignore # Cannot be a Member in private messages
 
     @property
-    def channel(self) -> PrivateChannel:
-        r""":class:`PrivateChannel`\: The private channel associated with this message."""
-        return self.message.channel
+    def channel(self) -> _PrivateChannel:
+        """:class:`.abc.PrivateChannel`: The private channel associated with this message."""
+        return self.message.channel  # type: ignore # Can only be a private channel here
 
     @property
     def duration(self) -> datetime.timedelta:
@@ -114,140 +119,291 @@ class PrivateCall:
 
     This is accompanied with a :class:`CallMessage` denoting the information.
 
+    .. versionadded:: 1.9
+
     Attributes
     -----------
     channel: :class:`DMChannel`
         The channel the call is in.
-    message: Optional[:class:`Message`]
-        The message associated with this call (if available).
     unavailable: :class:`bool`
         Denotes if this call is unavailable.
-    ringing: List[:class:`User`]
-        A list of users that are currently being rung to join the call.
-    region: :class:`VoiceRegion`
+    region: :class:`str`
         The region the call is being hosted at.
+
+        .. versionchanged:: 2.0
+            The type of this attribute has changed to :class:`str`.
     """
+
+    __slots__ = ('_state', '_ended', 'channel', '_cs_message', '_ringing', '_message_id', 'region', 'unavailable')
 
     if TYPE_CHECKING:
         channel: DMChannel
-        ringing: List[User]
-        region: VoiceRegion
 
     def __init__(
         self,
-        state: ConnectionState,
         *,
-        message_id: Snowflake,
-        channel_id: Snowflake,
-        message: Message = None,
+        data: dict,
+        state: ConnectionState,
+        message: Optional[Message],
         channel: PrivateChannel,
-        unavailable: bool,
-        voice_states: List[GuildVoiceState] = [],
-        **kwargs,
     ) -> None:
         self._state = state
-        self._message_id: int = int(message_id)
-        self._channel_id: int = int(channel_id)
-        self.message: Optional[Message] = message
-        self.channel = channel  # type: ignore
-        self.unavailable: bool = unavailable
+        self._cs_message = message
+        self.channel = channel  # type: ignore # Will always be a DMChannel here
         self._ended: bool = False
 
-        for vs in voice_states:
-            state._update_voice_state(vs)
+        self._update(data)
 
-        self._update(**kwargs)
-
-    def _deleteup(self) -> None:
-        self.ringing = []
+    def _delete(self) -> None:
+        self._ringing = tuple()
         self._ended = True
 
-    def _update(
-        self, *, ringing: SnowflakeList = {}, region: VoiceRegion = MISSING
-    ) -> None:
-        if region is not MISSING:
-            self.region = try_enum(VoiceRegion, region)
+    def _get_recipients(self) -> Set[abcUser]:
         channel = self.channel
-        recipients = {channel.me, channel.recipient}
+        return {channel.me, channel.recipient}
+
+    def _is_participating(self, user: abcUser) -> bool:
+        state = self.voice_state_for(user)
+        return bool(state and state.channel and state.channel.id == self.channel.id)
+
+    def _update(self, data) -> None:
+        self._message_id = int(data['message_id'])
+        self.unavailable = data.get('unavailable', False)
+        try:
+            self.region: str = data['region']
+        except KeyError:
+            pass
+
+        channel = self.channel
+        recipients = self._get_recipients()
         lookup = {u.id: u for u in recipients}
-        self.ringing = list(filter(None, map(lookup.get, ringing)))
+        self._ringing = tuple(filter(None, map(lookup.get, data.get('ringing', []))))
+
+        for vs in data.get('voice_states', []):
+            self._state._update_voice_state(vs, channel.id)
 
     @property
-    def initiator(self) -> Optional[User]:
-        """Optional[:class:`User`]: Returns the user that started the call. The call message must be available to obtain this information."""
-        if self.message:
-            return self.message.author
+    def ringing(self) -> List[abcUser]:
+        """List[:class:`.abc.User`]: A list of users that are currently being rung to join the call."""
+        return list(self._ringing)
+
+    @property
+    def initiator(self) -> User:
+        """:class:`.abc.User`: Returns the user that started the call."""
+        return getattr(self.message, 'author', None)
 
     @property
     def connected(self) -> bool:
-        """:class:`bool`: Returns whether you're in the call (this does not mean you're in the call through the lib)."""
-        return self.voice_state_for(self.channel.me).channel.id == self._channel_id
+        """:class:`bool`: Returns whether you're in the call (this does not mean you're in the call through the library)."""
+        return self._is_participating(self.channel.me)
 
     @property
-    def members(self) -> List[User]:
-        """List[:class:`User`]: Returns all users that are currently in this call."""
-        channel = self.channel
-        recipients = {channel.me, channel.recipient}
-        ret = [u for u in recipients if self.voice_state_for(u).channel.id == self._channel_id]
-
-        return ret
+    def members(self) -> List[abcUser]:
+        """List[:class:`.abc.User`]: Returns all users that are currently in this call."""
+        recipients = self._get_recipients()
+        return [u for u in recipients if self._is_participating(u)]
 
     @property
-    def voice_states(self)  -> List[VoiceState]:
+    def voice_states(self) -> Dict[int, VoiceState]:
         """Mapping[:class:`int`, :class:`VoiceState`]: Returns a mapping of user IDs who have voice states in this call."""
-        return set(self._voice_states)
+        return {
+            k: v for k, v in self._state._voice_states.items() if bool(v and v.channel and v.channel.id == self.channel.id)
+        }
 
-    async def fetch_message(self) -> Optional[Message]:
+    @cached_slot_property('_cs_message')
+    def message(self) -> Message:
+        """:class:`Message`: The message associated with this call."""
+        # Lying to the type checker for better developer UX, very unlikely for the message to not be received
+        return self._state._get_message(self._message_id)  # type: ignore
+
+    async def fetch_message(self) -> Message:
+        """|coro|
+
+        Fetches and caches the message associated with this call.
+
+        Raises
+        -------
+        HTTPException
+            Retrieving the message failed.
+
+        Returns
+        -------
+        :class:`Message`
+            The message associated with this call.
+        """
         message = await self.channel.fetch_message(self._message_id)
-        if message is not None and self.message is None:
-            self.message = message
+        state = self._state
+        if self.message is None:
+            if state._messages is not None:
+                state._messages.append(message)
+            self._cs_message = message
         return message
 
-    @_running_only
-    async def change_region(self, region) -> None:
+    async def change_region(self, region: str) -> None:
         """|coro|
 
         Changes the channel's voice region.
 
         Parameters
         -----------
-        region: :class:`VoiceRegion`
-            A :class:`VoiceRegion` to change the voice region to.
+        region: :class:`str`
+            A region to change the voice region to.
+
+            .. versionchanged:: 2.0
+                The type of this parameter has changed to :class:`str`.
 
         Raises
         -------
         HTTPException
             Failed to change the channel's voice region.
         """
-        await self._state.http.change_call_voice_region(self.channel.id, str(region))
+        await self._state.http.change_call_voice_region(self.channel.id, region)
 
     @_running_only
     async def ring(self) -> None:
+        """|coro|
+
+        Rings the other recipient.
+
+        Raises
+        -------
+        Forbidden
+            Not allowed to ring the other recipient.
+        HTTPException
+            Ringing failed.
+        ClientException
+            The call has ended.
+        """
         channel = self.channel
         await self._state.http.ring(channel.id, channel.recipient.id)
 
     @_running_only
     async def stop_ringing(self) -> None:
+        """|coro|
+
+        Stops ringing the other recipient.
+
+        Raises
+        -------
+        HTTPException
+            Stopping the ringing failed.
+        ClientException
+            The call has ended.
+        """
         channel = self.channel
         await self._state.http.stop_ringing(channel.id, channel.recipient.id)
 
     @_running_only
-    async def join(self, **kwargs) -> VoiceProtocol:
-        return await self.channel._connect(**kwargs)
+    async def connect(
+        self,
+        *,
+        timeout: float = 60.0,
+        reconnect: bool = True,
+        cls: Callable[[Client, Connectable], ConnectReturn] = MISSING,
+    ) -> ConnectReturn:
+        """|coro|
 
-    connect = join
+        Connects to voice and creates a :class:`~discord.VoiceClient` to establish
+        your connection to the voice server.
+
+        There is an alias of this called :attr:`join`.
+
+        Parameters
+        -----------
+        timeout: :class:`float`
+            The timeout in seconds to wait for the voice endpoint.
+        reconnect: :class:`bool`
+            Whether the bot should automatically attempt
+            a reconnect if a part of the handshake fails
+            or the gateway goes down.
+        cls: Type[:class:`~discord.VoiceProtocol`]
+            A type that subclasses :class:`~discord.VoiceProtocol` to connect with.
+            Defaults to :class:`~discord.VoiceClient`.
+
+        Raises
+        -------
+        asyncio.TimeoutError
+            Could not connect to the voice channel in time.
+        ~discord.ClientException
+            You are already connected to a voice channel.
+        ~discord.opus.OpusNotLoaded
+            The opus library has not been loaded.
+
+        Returns
+        --------
+        :class:`~discord.VoiceProtocol`
+            A voice client that is fully connected to the voice server.
+        """
+        return await self.channel.connect(timeout=timeout, reconnect=reconnect, cls=cls, ring=False)
 
     @_running_only
-    async def leave(self, **kwargs) -> None:
+    async def join(
+        self,
+        *,
+        timeout: float = 60.0,
+        reconnect: bool = True,
+        cls: Callable[[Client, Connectable], ConnectReturn] = MISSING,
+    ) -> ConnectReturn:
+        """|coro|
+
+        Connects to voice and creates a :class:`~discord.VoiceClient` to establish
+        your connection to the voice server.
+
+        This is an alias of :attr:`connect`.
+
+        Parameters
+        -----------
+        timeout: :class:`float`
+            The timeout in seconds to wait for the voice endpoint.
+        reconnect: :class:`bool`
+            Whether the bot should automatically attempt
+            a reconnect if a part of the handshake fails
+            or the gateway goes down.
+        cls: Type[:class:`~discord.VoiceProtocol`]
+            A type that subclasses :class:`~discord.VoiceProtocol` to connect with.
+            Defaults to :class:`~discord.VoiceClient`.
+
+        Raises
+        -------
+        asyncio.TimeoutError
+            Could not connect to the voice channel in time.
+        ~discord.ClientException
+            You are already connected to a voice channel.
+        ~discord.opus.OpusNotLoaded
+            The opus library has not been loaded.
+
+        Returns
+        --------
+        :class:`~discord.VoiceProtocol`
+            A voice client that is fully connected to the voice server.
+        """
+        return await self.connect(timeout=timeout, reconnect=reconnect, cls=cls)
+
+    @_running_only
+    async def disconnect(self, force: bool = False) -> None:
+        """|coro|
+
+        Disconnects this voice client from voice.
+
+        There is an alias of this called :attr:`leave`.
+        """
         state = self._state
         if not (client := state._get_voice_client(self.channel.me.id)):
             return
 
-        return await client.disconnect(**kwargs)
+        return await client.disconnect(force=force)
 
-    disconnect = leave
+    @_running_only
+    async def leave(self, force: bool = False) -> None:
+        """|coro|
 
-    def voice_state_for(self, user) -> Optional[VoiceState]:
+        Disconnects this voice client from voice.
+
+        This is an alias of :attr:`disconnect`.
+        """
+        return await self.disconnect(force=force)
+
+    def voice_state_for(self, user: abcSnowflake) -> Optional[VoiceState]:
         """Retrieves the :class:`VoiceState` for a specified :class:`User`.
 
         If the :class:`User` has no voice state then this function returns
@@ -255,7 +411,7 @@ class PrivateCall:
 
         Parameters
         ------------
-        user: :class:`User`
+        user: :class:`~discord.abc.Snowflake`
             The user to retrieve the voice state for.
 
         Returns
@@ -275,46 +431,65 @@ class GroupCall(PrivateCall):
     -----------
     channel: :class:`GroupChannel`
         The channel the group call is in.
-    message: Optional[:class:`Message`]
-        The message associated with this group call (if available).
     unavailable: :class:`bool`
         Denotes if this group call is unavailable.
-    ringing: List[:class:`User`]
-        A list of users that are currently being rung to join the call.
-    region: :class:`VoiceRegion`
+    region: :class:`str`
         The region the group call is being hosted in.
+
+        .. versionchanged:: 2.0
+            The type of this attribute has changed to :class:`str`.
     """
+
+    __slots__ = ()
 
     if TYPE_CHECKING:
         channel: GroupChannel
 
-    def _update(
-        self, *, ringing: SnowflakeList = [], region: VoiceRegion = MISSING
-    ) -> None:
-        if region is not MISSING:
-            self.region = try_enum(VoiceRegion, region)
-        lookup = {u.id: u for u in self.channel.recipients}
-        me = self.channel.me
-        lookup[me.id] = me
-        self.ringing = list(filter(None, map(lookup.get, ringing)))
-
-    @property
-    def members(self) -> List[User]:
-        """List[:class:`User`]: Returns all users that are currently in this call."""
-        ret = [u for u in self.channel.recipients if self.voice_state_for(u).channel.id == self._channel_id]
-        me = self.channel.me
-        if self.voice_state_for(me).channel.id == self._channel_id:
-            ret.append(me)
-
+    def _get_recipients(self) -> Set[abcUser]:
+        channel = self.channel
+        ret: Set[abcUser] = set(channel.recipients)
+        ret.add(channel.me)
         return ret
 
     @_running_only
-    async def ring(self, *recipients) -> None:
-        await self._state.http.ring(self._channel_id, *{r.id for r in recipients})
+    async def ring(self, *recipients: abcSnowflake) -> None:
+        r"""|coro|
+
+        Rings the specified recipients.
+
+        Parameters
+        -----------
+        \*recipients: :class:`~discord.abc.Snowflake`
+            The recipients to ring. The default is to ring all recipients.
+
+        Raises
+        -------
+        HTTPException
+            Stopping the ringing failed.
+        ClientException
+            The call has ended.
+        """
+        await self._state.http.ring(self.channel.id, *{r.id for r in recipients})
 
     @_running_only
-    async def stop_ringing(self, *recipients) -> None:
-        await self._state.http.stop_ringing(self._channel_id, *{r.id for r in recipients})
+    async def stop_ringing(self, *recipients: abcSnowflake) -> None:
+        r"""|coro|
+
+        Stops ringing the specified recipients.
+
+        Parameters
+        -----------
+        \*recipients: :class:`~discord.abc.Snowflake`
+            The recipients to stop ringing.
+
+        Raises
+        -------
+        HTTPException
+            Ringing failed.
+        ClientException
+            The call has ended.
+        """
+        await self._state.http.stop_ringing(self.channel.id, *{r.id for r in recipients})
 
 
 Call = Union[PrivateCall, GroupCall]

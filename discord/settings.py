@@ -28,9 +28,18 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 from .activity import create_settings_activity
-from .enums import FriendFlags, NotificationLevel, Status, StickerAnimationOptions, Theme, UserContentFilter, try_enum
+from .enums import (
+    FriendFlags,
+    Locale,
+    NotificationLevel,
+    Status,
+    StickerAnimationOptions,
+    Theme,
+    UserContentFilter,
+    try_enum,
+)
 from .guild_folder import GuildFolder
-from .utils import copy_doc, MISSING, parse_time, utcnow
+from .utils import MISSING, parse_time, utcnow
 
 if TYPE_CHECKING:
     from .abc import GuildChannel
@@ -43,11 +52,14 @@ __all__ = (
     'ChannelSettings',
     'GuildSettings',
     'UserSettings',
+    'MuteConfig',
 )
 
 
 class UserSettings:
     """Represents the Discord client settings.
+
+    .. versionadded:: 1.9
 
     Attributes
     ----------
@@ -81,9 +93,6 @@ class UserSettings:
         Whether or not to display attachments when they are uploaded in chat.
     inline_embed_media: :class:`bool`
         Whether or not to display videos and images from links posted in chat.
-    locale: :class:`str`
-        The :rfc:`3066` language identifier of the locale to use for the language
-        of the Discord client.
     message_display_compact: :class:`bool`
         Whether or not to use the compact Discord display mode.
         native_phone_integration_enabled: :class:`bool`
@@ -117,7 +126,6 @@ class UserSettings:
         gif_auto_play: bool
         inline_attachment_media: bool
         inline_embed_media: bool
-        locale: str
         message_display_compact: bool
         native_phone_integration_enabled: bool
         render_embeds: bool
@@ -152,7 +160,6 @@ class UserSettings:
             'gif_auto_play',
             'inline_attachment_media',
             'inline_embed_media',
-            'locale',
             'message_display_compact',
             'native_phone_integration_enabled',
             'render_embeds',
@@ -218,7 +225,7 @@ class UserSettings:
             Whether or not to display attachments when they are uploaded in chat.
         inline_embed_media: :class:`bool`
             Whether or not to display videos and images from links posted in chat.
-        locale: :class:`str`
+        locale: :class:`Locale`
             The :rfc:`3066` language identifier of the locale to use for the language
             of the Discord client.
         message_display_compact: :class:`bool`
@@ -226,6 +233,8 @@ class UserSettings:
         native_phone_integration_enabled: :class:`bool`
             Whether or not to enable the new Discord mobile phone number friend
             requesting features.
+        passwordless: :class:`bool`
+            Unknown.
         render_embeds: :class:`bool`
             Whether or not to render embeds that are sent in the chat.
         render_reactions: :class:`bool`
@@ -285,13 +294,13 @@ class UserSettings:
 
     @property
     def custom_activity(self) -> Optional[CustomActivity]:
-        """Optional[:class:`CustomActivity]: The custom activity you have set."""
+        """Optional[:class:`CustomActivity`]: The set custom activity."""
         return create_settings_activity(data=getattr(self, '_custom_status', None), state=self._state)
 
     @property
     def explicit_content_filter(self) -> UserContentFilter:
         """:class:`UserContentFilter`: The filter for explicit content in all messages."""
-        return try_enum(UserContentFilter, getattr(self, '_explicit_content_filter', 1))
+        return try_enum(UserContentFilter, getattr(self, '_explicit_content_filter', 0))
 
     @property
     def friend_source_flags(self) -> FriendFlags:
@@ -310,8 +319,14 @@ class UserSettings:
         return list(filter(None, map(self._get_guild, getattr(self, '_guild_positions', []))))
 
     @property
+    def locale(self) -> Locale:
+        """:class:`Locale`: The :rfc:`3066` language identifier
+        of the locale to use for the language of the Discord client."""
+        return try_enum(Locale, getattr(self, '_locale', 'en-US'))
+
+    @property
     def passwordless(self) -> bool:
-        """:class:`bool`: Whether the account is passwordless."""
+        """:class:`bool`: Unknown."""
         return getattr(self, '_passwordless', False)
 
     @property
@@ -321,6 +336,7 @@ class UserSettings:
 
     @property
     def status(self) -> Status:
+        """Optional[:class:`Status`]: The configured status."""
         return try_enum(Status, getattr(self, '_status', 'online'))
 
     @property
@@ -330,6 +346,36 @@ class UserSettings:
 
 
 class MuteConfig:
+    """An object representing an object's mute status.
+
+    .. versionadded:: 2.0
+
+    .. container:: operations
+
+        .. describe:: x == y
+
+            Checks if two items are muted.
+
+        .. describe:: x != y
+
+            Checks if two items are not muted.
+
+        .. describe:: str(x)
+
+            Returns the mute status as a string.
+
+        .. describe:: int(x)
+
+            Returns the mute status as an int.
+
+    Attributes
+    ----------
+    muted: :class:`bool`
+        Indicates if the object is muted.
+    until: Optional[:class:`datetime.datetime`]
+        When the mute will expire.
+    """
+
     def __init__(self, muted: bool, config: Dict[str, str]) -> None:
         until = parse_time(config.get('end_time'))
         if until is not None:
@@ -346,18 +392,34 @@ class MuteConfig:
     def __repr__(self) -> str:
         return f'<MuteConfig muted={self.muted} until={self.until}>'
 
+    def __str__(self) -> str:
+        return str(self.muted)
+
+    def __int__(self) -> int:
+        return int(self.muted)
+
     def __bool__(self) -> bool:
-        return bool(self.muted)
+        return self.muted
 
-    def __eq__(self, other) -> bool:
-        return self.muted == other
+    def __eq__(self, other: object) -> bool:
+        return self.muted == bool(other)
 
-    def __ne__(self, other) -> bool:
-        return not self.muted == other
+    def __ne__(self, other: object) -> bool:
+        return not self.muted == bool(other)
 
 
 class ChannelSettings:
-    """Represents a channel's notification settings"""
+    """Represents a channel's notification settings.
+
+    Attributes
+    ----------
+    level: :class:`NotificationLevel`
+        The notification level for the channel.
+    muted: :class:`MuteConfig`
+        The mute configuration for the channel.
+    collapsed: :class:`bool`
+        Unknown.
+    """
 
     if TYPE_CHECKING:
         _channel_id: int
@@ -374,16 +436,17 @@ class ChannelSettings:
         self._channel_id = int(data['channel_id'])
         self.collapsed = data.get('collapsed', False)
 
-        self.level = try_enum(NotificationLevel, data.get('message_notifications', 3))  # type: ignore
+        self.level = try_enum(NotificationLevel, data.get('message_notifications', 3))
         self.muted = MuteConfig(data.get('muted', False), data.get('mute_config') or {})
 
     @property
     def channel(self) -> Optional[GuildChannel]:
-        """Optional[:class:`GuildChannel`]: Returns the channel these settings are for."""
+        """Optional[:class:`.abc.GuildChannel`]: Returns the channel these settings are for."""
         guild = self._state._get_guild(self._guild_id)
         return guild and guild.get_channel(self._channel_id)
 
-    async def edit(self,
+    async def edit(
+        self,
         *,
         muted: bool = MISSING,
         duration: Optional[int] = MISSING,
@@ -419,7 +482,6 @@ class ChannelSettings:
             The new notification settings.
         """
         payload = {}
-        data = None
 
         if muted is not MISSING:
             payload['muted'] = muted
@@ -431,7 +493,7 @@ class ChannelSettings:
             if duration is not None:
                 mute_config = {
                     'selected_time_window': duration * 3600,
-                    'end_time': (datetime.utcnow() + timedelta(hours=duration)).isoformat()
+                    'end_time': (datetime.utcnow() + timedelta(hours=duration)).isoformat(),
                 }
                 payload['mute_config'] = mute_config
 
@@ -441,22 +503,32 @@ class ChannelSettings:
         if level is not MISSING:
             payload['message_notifications'] = level.value
 
-        if payload:
-            fields = {'channel_overrides': {str(self._channel_id): payload}}
-            data = await self._state.http.edit_guild_settings(self._guild_id, fields)
+        fields = {'channel_overrides': {str(self._channel_id): payload}}
+        data = await self._state.http.edit_guild_settings(self._guild_id, fields)
 
-        if data:
-            return ChannelSettings(
-                self._guild_id,
-                data=data['channel_overrides'][str(self._channel_id)],
-                state=self._state
-            )
-        else:
-            return self
+        return ChannelSettings(self._guild_id, data=data['channel_overrides'][str(self._channel_id)], state=self._state)
 
 
 class GuildSettings:
-    """Represents a guild's notification settings."""
+    """Represents a guild's notification settings.
+
+    Attributes
+    ----------
+    level: :class:`NotificationLevel`
+        The notification level for the guild.
+    muted: :class:`MuteConfig`
+        The mute configuration for the guild.
+    suppress_everyone: :class:`bool`
+        Whether to suppress @everyone/@here notifications.
+    suppress_roles: :class:`bool`
+        Whether to suppress role notifications.
+    hide_muted_channels: :class:`bool`
+        Whether to hide muted channels.
+    mobile_push_notifications: :class:`bool`
+        Whether to enable mobile push notifications.
+    version: :class:`int`
+        The version of the guild's settings.
+    """
 
     if TYPE_CHECKING:
         _channel_overrides: Dict[int, ChannelSettings]
@@ -544,7 +616,6 @@ class GuildSettings:
             The new notification settings.
         """
         payload = {}
-        data = None
 
         if muted is not MISSING:
             payload['muted'] = muted
@@ -556,7 +627,7 @@ class GuildSettings:
             if duration is not None:
                 mute_config = {
                     'selected_time_window': duration * 3600,
-                    'end_time': (datetime.utcnow() + timedelta(hours=duration)).isoformat()
+                    'end_time': (datetime.utcnow() + timedelta(hours=duration)).isoformat(),
                 }
                 payload['mute_config'] = mute_config
 
@@ -575,10 +646,6 @@ class GuildSettings:
         if hide_muted_channels is not MISSING:
             payload['hide_muted_channels'] = hide_muted_channels
 
-        if payload:
-            data = await self._state.http.edit_guild_settings(self._guild_id, payload)
+        data = await self._state.http.edit_guild_settings(self._guild_id, payload)
 
-        if data:
-            return GuildSettings(data=data, state=self._state)
-        else:
-            return self
+        return GuildSettings(data=data, state=self._state)

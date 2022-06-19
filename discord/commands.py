@@ -24,21 +24,23 @@ DEALINGS IN THE SOFTWARE.
 
 from __future__ import annotations
 
-from datetime import datetime
-from typing import Any, Dict, List, Optional, Protocol, Tuple, runtime_checkable, TYPE_CHECKING, Union
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Protocol, Tuple, Type, Union, runtime_checkable
 
-from .enums import CommandType, ChannelType, OptionType, try_enum
-from .errors import InvalidData, InvalidArgument
-from .utils import _generate_session_id, time_snowflake
+from .enums import AppCommandOptionType, AppCommandType, ChannelType, InteractionType, try_enum
+from .errors import InvalidData
+from .mixins import Hashable
+from .permissions import Permissions
+from .utils import _generate_nonce, _get_as_snowflake
 
 if TYPE_CHECKING:
     from .abc import Messageable, Snowflake
+    from .appinfo import InteractionApplication
+    from .file import File
     from .interactions import Interaction
-    from .message import Message
+    from .message import Attachment, Message
     from .state import ConnectionState
 
 __all__ = (
-    'ApplicationCommand',
     'BaseCommand',
     'UserCommand',
     'MessageCommand',
@@ -51,7 +53,7 @@ __all__ = (
 
 @runtime_checkable
 class ApplicationCommand(Protocol):
-    """An ABC that represents a useable application command.
+    """An ABC that represents a usable application command.
 
     The following implement this ABC:
 
@@ -67,114 +69,64 @@ class ApplicationCommand(Protocol):
         The command's name.
     description: :class:`str`
         The command's description, if any.
-    version: :class:`int`
-        The command's version.
-    type: :class:`CommandType`
+    type: :class:`~discord.AppCommandType`
         The type of application command.
     default_permission: :class:`bool`
         Whether the command is enabled in guilds by default.
+    dm_permission: :class:`bool`
+        Whether the command is enabled in DMs.
+    application: Optional[:class:`~discord.InteractionApplication`]
+        The application this command belongs to.
+        Only available if requested.
+    application_id: :class:`int`
+        The ID of the application this command belongs to.
     """
 
     __slots__ = ()
 
     if TYPE_CHECKING:
         _state: ConnectionState
-        _application_id: int
+        _channel: Optional[Messageable]
+        _default_member_permissions: Optional[int]
         name: str
         description: str
         version: int
-        type: CommandType
-        target_channel: Optional[Messageable]
+        type: AppCommandType
         default_permission: bool
+        dm_permission: bool
+        application_id: int
+        application: Optional[InteractionApplication]
 
-    async def __call__(self, data, channel: Optional[Messageable] = None) -> Interaction:
+    def __str__(self) -> str:
+        return self.name
+
+    async def __call__(
+        self, data: dict, files: Optional[List[File]] = None, channel: Optional[Messageable] = None
+    ) -> Interaction:
         channel = channel or self.target_channel
         if channel is None:
             raise TypeError('__call__() missing 1 required argument: \'channel\'')
         state = self._state
-        channel = await channel._get_channel()
+        acc_channel = await channel._get_channel()
+        nonce = _generate_nonce()
+        type = InteractionType.application_command
 
-        payload = {
-            'application_id': str(self._application_id),
-            'channel_id': str(channel.id),
-            'data': data,
-            'nonce': str(time_snowflake(datetime.utcnow())),
-            'session_id': state.session_id or _generate_session_id(),
-            'type': 2,  # Should be an enum but eh
-        }
-        if getattr(channel, 'guild', None) is not None:
-            payload['guild_id'] = str(channel.guild.id)
-
-        state._interactions[payload['nonce']] = (2, data['name'])
-        await state.http.interact(payload, form_data=True)
+        state._interaction_cache[nonce] = (type.value, data['name'], acc_channel)
         try:
+            await state.http.interact(type, data, acc_channel, files=files, nonce=nonce, application_id=self.application_id)
             i = await state.client.wait_for(
                 'interaction_finish',
-                check=lambda d: d.nonce == payload['nonce'],
-                timeout=5,
+                check=lambda d: d.nonce == nonce,
+                timeout=7,
             )
         except TimeoutError as exc:
             raise InvalidData('Did not receive a response from Discord') from exc
+        finally:  # Cleanup even if we failed
+            state._interaction_cache.pop(nonce, None)
         return i
-
-
-class BaseCommand(ApplicationCommand):
-    """Represents a base command.
-
-    Attributes
-    ----------
-    id: :class:`int`
-        The command's ID.
-    name: :class:`str`
-        The command's name.
-    description: :class:`str`
-        The command's description, if any.
-    version: :class:`int`
-        The command's version.
-    type: :class:`CommandType`
-        The type of application command.
-    default_permission: :class:`bool`
-        Whether the command is enabled in guilds by default.
-    """
-
-    __slots__ = (
-        'name',
-        'description',
-        'id',
-        'version',
-        'type',
-        'default_permission',
-        '_data',
-        '_state',
-        '_channel',
-        '_application_id',
-        '_dm_permission',
-        '_default_member_permissions',
-    )
-
-    def __init__(
-        self, *, state: ConnectionState, data: Dict[str, Any], channel: Optional[Messageable] = None
-    ) -> None:
-        self._state = state
-        self._data = data
-        self.name = data['name']
-        self.description = data['description']
-        self._channel = channel
-        self._application_id: int = int(data['application_id'])
-        self.id: int = int(data['id'])
-        self.version = int(data['version'])
-        self.type = try_enum(CommandType, data['type'])
-        self.default_permission: bool = data['default_permission']
-        self._dm_permission = data['dm_permission']
-        self._default_member_permissions = data['default_member_permissions']
-
-    def __repr__(self) -> str:
-        return f'<{self.__class__.__name__} id={self.id} name={self.name}>'
 
     def is_group(self) -> bool:
         """Query whether this command is a group.
-
-        Here for compatibility purposes.
 
         Returns
         -------
@@ -184,15 +136,9 @@ class BaseCommand(ApplicationCommand):
         return False
 
     @property
-    def application(self):
-        """The application this command belongs to."""
-        ...
-        #return self._state.get_application(self._application_id)
-
-    @property
     def target_channel(self) -> Optional[Messageable]:
-        """Optional[:class:`Messageable`]: The channel this application command will be used on.
-    
+        """Optional[:class:`.abc.Messageable`]: The channel this application command will be used on.
+
         You can set this in order to use this command in a different channel without re-fetching it.
         """
         return self._channel
@@ -200,9 +146,103 @@ class BaseCommand(ApplicationCommand):
     @target_channel.setter
     def target_channel(self, value: Optional[Messageable]) -> None:
         from .abc import Messageable
+
         if not isinstance(value, Messageable) and value is not None:
             raise TypeError('channel must derive from Messageable')
         self._channel = value
+
+    @property
+    def default_member_permissions(self) -> Optional[Permissions]:
+        """Optional[:class:`~discord.Permissions`]: The default permissions required to use this command.
+
+        ..note::
+            This may be overrided on a guild-by-guild basis.
+        """
+        perms = self._default_member_permissions
+        return Permissions(perms) if perms is not None else None
+
+
+class BaseCommand(ApplicationCommand, Hashable):
+    """Represents a base command.
+
+    .. container:: operations
+
+        .. describe:: x == y
+
+            Checks if two commands are equal.
+
+        .. describe:: x != y
+
+            Checks if two commands are not equal.
+
+        .. describe:: hash(x)
+
+            Return the command's hash.
+
+        .. describe:: str(x)
+
+            Returns the command's name.
+
+    Attributes
+    ----------
+    id: :class:`int`
+        The command's ID.
+    version: :class:`int`
+        The command's version.
+    name: :class:`str`
+        The command's name.
+    description: :class:`str`
+        The command's description, if any.
+    type: :class:`AppCommandType`
+        The type of application command.
+    default_permission: :class:`bool`
+        Whether the command is enabled in guilds by default.
+    dm_permission: :class:`bool`
+        Whether the command is enabled in DMs.
+    application: Optional[:class:`InteractionApplication`]
+        The application this command belongs to.
+        Only available if requested.
+    application_id: :class:`int`
+        The ID of the application this command belongs to.
+    """
+
+    __slots__ = (
+        'name',
+        'description',
+        'id',
+        'version',
+        'type',
+        'default_permission',
+        'application',
+        'application_id',
+        'dm_permission',
+        '_data',
+        '_state',
+        '_channel',
+        '_default_member_permissions',
+    )
+
+    def __init__(self, *, state: ConnectionState, data: Dict[str, Any], channel: Optional[Messageable] = None) -> None:
+        self._state = state
+        self._data = data
+        self.name = data['name']
+        self.description = data['description']
+        self._channel = channel
+        self.application_id: int = int(data['application_id'])
+        self.id: int = int(data['id'])
+        self.version = int(data['version'])
+        self.type = try_enum(AppCommandType, data['type'])
+
+        application = data.get('application')
+        self.application = state.create_interaction_application(application) if application else None
+
+        self._default_member_permissions = _get_as_snowflake(data, 'default_member_permissions')
+        self.default_permission: bool = data.get('default_permission', True)
+        dm_permission = data.get('dm_permission')  # Null means true?
+        self.dm_permission = dm_permission if dm_permission is not None else True
+
+    def __repr__(self) -> str:
+        return f'<{self.__class__.__name__} id={self.id} name={self.name!r}>'
 
 
 class SlashMixin(ApplicationCommand, Protocol):
@@ -211,61 +251,75 @@ class SlashMixin(ApplicationCommand, Protocol):
         options: List[Option]
         children: List[SubCommand]
 
-    async def __call__(self, options, channel=None):
+    async def __call__(
+        self,
+        options: List[dict],
+        files: Optional[List[File]],
+        attachments: List[Attachment],
+        channel: Optional[Messageable] = None,
+    ) -> Interaction:
         obj = self._parent
         command = obj._data
         command['name_localized'] = command['name']
         data = {
             'application_command': command,
-            'attachments': [],
+            'attachments': attachments,
             'id': str(obj.id),
             'name': obj.name,
             'options': options,
             'type': obj.type.value,
             'version': str(obj.version),
         }
-        return await super().__call__(data, channel)
+        return await super().__call__(data, files, channel)
 
-    def _parse_kwargs(self, kwargs: Dict[str, Any]) -> List[Dict[str, Any]]:
+    def _parse_kwargs(self, kwargs: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], List[File], List[Attachment]]:
         possible_options = {o.name: o for o in self.options}
         kwargs = {k: v for k, v in kwargs.items() if k in possible_options}
         options = []
+        files = []
 
         for k, v in kwargs.items():
             option = possible_options[k]
             type = option.type
 
             if type in {
-                OptionType.user,
-                OptionType.channel,
-                OptionType.role,
-                OptionType.mentionable,
+                AppCommandOptionType.user,
+                AppCommandOptionType.channel,
+                AppCommandOptionType.role,
+                AppCommandOptionType.mentionable,
             }:
                 v = str(v.id)
-            elif type is OptionType.boolean:
+            elif type is AppCommandOptionType.boolean:
                 v = bool(v)
+            elif type is AppCommandOptionType.attachment:
+                files.append(v)
+                v = len(files) - 1
             else:
                 v = option._convert(v)
 
-            if type is OptionType.string:
+            if type is AppCommandOptionType.string:
                 v = str(v)
-            elif type is OptionType.integer:
+            elif type is AppCommandOptionType.integer:
                 v = int(v)
-            elif type is OptionType.number:
+            elif type is AppCommandOptionType.number:
                 v = float(v)
 
             options.append({'name': k, 'value': v, 'type': type.value})
 
-        return options
+        attachments = []
+        for index, file in enumerate(files):
+            attachments.append(file.to_dict(index))
+
+        return options, files, attachments
 
     def _unwrap_options(self, data: List[Dict[str, Any]]) -> None:
         options = []
         children = []
         for option in data:
-            type = try_enum(OptionType, option['type'])
+            type = try_enum(AppCommandOptionType, option['type'])
             if type in {
-                OptionType.sub_command,
-                OptionType.sub_command_group,
+                AppCommandOptionType.sub_command,
+                AppCommandOptionType.sub_command_group,
             }:
                 children.append(SubCommand(parent=self, data=option))
             else:
@@ -287,9 +341,7 @@ class UserCommand(BaseCommand):
         super().__init__(**kwargs)
         self._user = user
 
-    async def __call__(
-        self, user: Optional[Snowflake] = None, *, channel: Optional[Messageable] = None
-    ):
+    async def __call__(self, user: Optional[Snowflake] = None, *, channel: Optional[Messageable] = None):
         """Use the user command.
 
         Parameters
@@ -317,12 +369,12 @@ class UserCommand(BaseCommand):
             'type': self.type.value,
             'version': str(self.version),
         }
-        return await super().__call__(data, channel)
+        return await super().__call__(data, None, channel)
 
     @property
     def target_user(self) -> Optional[Snowflake]:
-        """Optional[:class:`Snowflake`]: The user this application command will be used on.
-    
+        """Optional[:class:`~abc.Snowflake`]: The user this application command will be used on.
+
         You can set this in order to use this command on a different user without re-fetching it.
         """
         return self._user
@@ -330,27 +382,14 @@ class UserCommand(BaseCommand):
     @target_user.setter
     def target_user(self, value: Optional[Snowflake]) -> None:
         from .abc import Snowflake
+
         if not isinstance(value, Snowflake) and value is not None:
             raise TypeError('user must be Snowflake')
         self._user = value
 
 
 class MessageCommand(BaseCommand):
-    """Represents a message command.
-
-    Attributes
-    ----------
-    id: :class:`int`
-        The command's ID.
-    name: :class:`str`
-        The command's name.
-    description: :class:`str`
-        The command's description, if any.
-    type: :class:`CommandType`
-        The type of application command. Always :class:`CommandType.message`.
-    default_permission: :class:`bool`
-        Whether the command is enabled in guilds by default.
-    """
+    """Represents a message command."""
 
     __slots__ = ('_message',)
 
@@ -358,9 +397,7 @@ class MessageCommand(BaseCommand):
         super().__init__(**kwargs)
         self._message = message
 
-    async def __call__(
-        self, message: Optional[Message] = None, *, channel: Optional[Messageable] = None
-    ):
+    async def __call__(self, message: Optional[Message] = None, *, channel: Optional[Messageable] = None):
         """Use the message command.
 
         Parameters
@@ -388,12 +425,12 @@ class MessageCommand(BaseCommand):
             'type': self.type.value,
             'version': str(self.version),
         }
-        return await super().__call__(data, channel)
+        return await super().__call__(data, None, channel)
 
     @property
     def target_message(self) -> Optional[Message]:
         """Optional[:class:`Message`]: The message this application command will be used on.
-    
+
         You can set this in order to use this command on a different message without re-fetching it.
         """
         return self._message
@@ -401,6 +438,7 @@ class MessageCommand(BaseCommand):
     @target_message.setter
     def target_message(self, value: Optional[Message]) -> None:
         from .message import Message
+
         if not isinstance(value, Message) and value is not None:
             raise TypeError('message must be Message')
         self._message = value
@@ -411,16 +449,6 @@ class SlashCommand(BaseCommand, SlashMixin):
 
     Attributes
     ----------
-    id: :class:`int`
-        The command's ID.
-    name: :class:`str`
-        The command's name.
-    description: :class:`str`
-        The command's description, if any.
-    type: :class:`CommandType`
-        The type of application command. Always :class:`CommandType.chat_input`.
-    default_permission: :class:`bool`
-        Whether the command is enabled in guilds by default.
     options: List[:class:`Option`]
         The command's options.
     children: List[:class:`SubCommand`]
@@ -430,9 +458,7 @@ class SlashCommand(BaseCommand, SlashMixin):
 
     __slots__ = ('_parent', 'options', 'children')
 
-    def __init__(
-        self, *, data: Dict[str, Any], **kwargs
-    ) -> None:
+    def __init__(self, *, data: Dict[str, Any], **kwargs) -> None:
         super().__init__(data=data, **kwargs)
         self._parent = self
         self._unwrap_options(data.get('options', []))
@@ -451,16 +477,16 @@ class SlashCommand(BaseCommand, SlashMixin):
 
         Raises
         ------
-        InvalidArgument
+        TypeError
             Attempted to use a group.
         """
         if self.is_group():
-            raise InvalidArgument('Cannot use a group')
+            raise TypeError('Cannot use a group')
 
-        return await super().__call__(self._parse_kwargs(kwargs), channel)
+        return await super().__call__(*self._parse_kwargs(kwargs), channel)
 
     def __repr__(self) -> str:
-        BASE = f'<SlashCommand id={self.id} name={self.name}'
+        BASE = f'<SlashCommand id={self.id} name={self.name!r}'
         if self.options:
             BASE += f' options={len(self.options)}'
         if self.children:
@@ -483,16 +509,27 @@ class SubCommand(SlashMixin):
 
     This could be a subcommand, or a subgroup.
 
+    .. container:: operations
+
+        .. describe:: str(x)
+
+            Returns the command's name.
+
     Attributes
     ----------
+    name: :class:`str`
+        The subcommand's name.
+    description: :class:`str`
+        The subcommand's description, if any.
+    type: :class:`AppCommandType`
+        The type of application command. Always :attr:`AppCommandType.chat_input`.
     parent: :class:`SlashCommand`
         The parent command.
-    name: :class:`str`
-        The command's name.
-    description: :class:`str`
-        The command's description, if any.
-    type: :class:`CommandType`
-        The type of application command. Always :class:`CommandType.chat_input`.
+    options: List[:class:`Option`]
+        The subcommand's options.
+    children: List[:class:`SubCommand`]
+        The subcommand's subcommands. If a subcommand has subcommands, it is a group and cannot be used.
+        You can access (and use) subcommands directly as attributes of the class.
     """
 
     __slots__ = (
@@ -511,9 +548,12 @@ class SubCommand(SlashMixin):
         self._state = parent._state
         self.parent: Union[SlashCommand, SubCommand] = parent
         self._parent: SlashCommand = getattr(parent, 'parent', parent)  # type: ignore
-        self.type = CommandType.chat_input  # Avoid confusion I guess
-        self._type: OptionType = try_enum(OptionType, data['type'])
+        self.type = AppCommandType.chat_input  # Avoid confusion I guess
+        self._type: AppCommandOptionType = try_enum(AppCommandOptionType, data['type'])
         self._unwrap_options(data.get('options', []))
+
+    def __str__(self) -> str:
+        return self.name
 
     def _walk_parents(self):
         parent = self.parent
@@ -538,28 +578,34 @@ class SubCommand(SlashMixin):
 
         Raises
         ------
-        InvalidArgument
+        TypeError
             Attempted to use a group.
         """
         if self.is_group():
-            raise InvalidArgument('Cannot use a group')
+            raise TypeError('Cannot use a group')
 
-        options = [{
-            'type': self._type.value,
-            'name': self.name,
-            'options': self._parse_kwargs(kwargs),
-        }]
-        for parent in self._walk_parents():
-            options = [{
-                'type': parent._type.value,
-                'name': parent.name,
+        options, files, attachments = self._parse_kwargs(kwargs)
+
+        options = [
+            {
+                'type': self._type.value,
+                'name': self.name,
                 'options': options,
-            }]
+            }
+        ]
+        for parent in self._walk_parents():
+            options = [
+                {
+                    'type': parent._type.value,
+                    'name': parent.name,
+                    'options': options,
+                }
+            ]
 
-        return await super().__call__(options, channel)
+        return await super().__call__(options, files, attachments, channel)
 
     def __repr__(self) -> str:
-        BASE = f'<SubCommand name={self.name}'
+        BASE = f'<SubCommand name={self.name!r}'
         if self.options:
             BASE += f' options={len(self.options)}'
         if self.children:
@@ -567,8 +613,13 @@ class SubCommand(SlashMixin):
         return BASE + '>'
 
     @property
-    def _application_id(self) -> int:
-        return self._parent._application_id
+    def _default_member_permissions(self) -> Optional[int]:
+        return self._parent._default_member_permissions
+
+    @property
+    def application_id(self) -> int:
+        """:class:`int`: The ID of the application this command belongs to."""
+        return self._parent.application_id
 
     @property
     def version(self) -> int:
@@ -580,6 +631,11 @@ class SubCommand(SlashMixin):
         """:class:`bool`: Whether the command is enabled in guilds by default."""
         return self._parent.default_permission
 
+    @property
+    def dm_permission(self) -> bool:
+        """:class:`bool`: Whether the command is enabled in DMs."""
+        return self._parent.dm_permission
+
     def is_group(self) -> bool:
         """Query whether this command is a group.
 
@@ -588,16 +644,18 @@ class SubCommand(SlashMixin):
         :class:`bool`
             Whether this command is a group.
         """
-        return self._type is OptionType.sub_command_group
+        return self._type is AppCommandOptionType.sub_command_group
 
     @property
     def application(self):
-        """The application this command belongs to."""
+        """Optional[:class:`InteractionApplication`]: The application this command belongs to.
+        Only available if requested.
+        """
         return self._parent.application
 
     @property
     def target_channel(self) -> Optional[Messageable]:
-        """Optional[:class:`abc.Messageable`]: The channel this command will be used on.
+        """Optional[:class:`.abc.Messageable`]: The channel this command will be used on.
 
         You can set this in order to use this command on a different channel without re-fetching it.
         """
@@ -611,28 +669,39 @@ class SubCommand(SlashMixin):
 class Option:
     """Represents a command option.
 
+    .. container:: operations
+
+        .. describe:: str(x)
+
+            Returns the option's name.
+
     Attributes
     ----------
     name: :class:`str`
         The option's name.
     description: :class:`str`
         The option's description, if any.
-    type: :class:`OptionType`
+    type: :class:`AppCommandOptionType`
         The type of option.
     required: :class:`bool`
         Whether the option is required.
     min_value: Optional[Union[:class:`int`, :class:`float`]]
-        Minimum value of the option. Only applicable to :attr:`OptionType.integer` and :attr:`OptionType.number`.
+        Minimum value of the option. Only applicable to :attr:`AppCommandOptionType.integer` and :attr:`AppCommandOptionType.number`.
     max_value: Optional[Union[:class:`int`, :class:`float`]]
-        Maximum value of the option. Only applicable to :attr:`OptionType.integer` and :attr:`OptionType.number`.
+        Maximum value of the option. Only applicable to :attr:`AppCommandOptionType.integer` and :attr:`AppCommandOptionType.number`.
     choices: List[:class:`OptionChoice`]
         A list of possible choices to choose from. If these are present, you must choose one from them.
-        Only applicable to :attr:`OptionType.string`, :attr:`OptionType.integer`, and :attr:`OptionType.number`.
+
+        Only applicable to :attr:`AppCommandOptionType.string`, :attr:`AppCommandOptionType.integer`, and :attr:`AppCommandOptionType.number`.
     channel_types: List[:class:`ChannelType`]
         A list of channel types that you can choose from. If these are present, you must choose a channel that is one of these types.
-        Only applicable to :attr:`OptionType.channel`.
+
+        Only applicable to :attr:`AppCommandOptionType.channel`.
     autocomplete: :class:`bool`
-        Whether the option autocompletes. Always ``False`` if :attr:`choices` are present.
+        Whether the option autocompletes.
+
+        Only applicable to :attr:`AppCommandOptionType.string`, :attr:`AppCommandOptionType.integer`, and :attr:`AppCommandOptionType.number`.
+        Always ``False`` if :attr:`choices` are present.
     """
 
     __slots__ = (
@@ -650,7 +719,7 @@ class Option:
     def __init__(self, data):
         self.name: str = data['name']
         self.description: str = data['description']
-        self.type: OptionType = try_enum(OptionType, data['type'])
+        self.type: AppCommandOptionType = try_enum(AppCommandOptionType, data['type'])
         self.required: bool = data.get('required', False)
         self.min_value: Optional[Union[int, float]] = data.get('min_value')
         self.max_value: Optional[int] = data.get('max_value')
@@ -658,8 +727,11 @@ class Option:
         self.channel_types: List[ChannelType] = [try_enum(ChannelType, c) for c in data.get('channel_types', [])]
         self.autocomplete: bool = data.get('autocomplete', False)
 
+    def __str__(self) -> str:
+        return self.name
+
     def __repr__(self) -> str:
-        return f'<Option name={self.name} type={self.type} required={self.required}>'
+        return f'<Option name={self.name!r} type={self.type!r} required={self.required}>'
 
     def _convert(self, value):
         for choice in self.choices:
@@ -671,27 +743,37 @@ class Option:
 class OptionChoice:
     """Represents a choice for an option.
 
+    .. container:: operations
+
+        .. describe:: str(x)
+
+            Returns the choice's name.
+
     Attributes
     ----------
     name: :class:`str`
         The choice's displayed name.
-    value: Any
+    value: Union[:class:`str`, :class:`int`, :class:`float`]
         The choice's value. The type of this depends on the option's type.
     """
 
     __slots__ = ('name', 'value')
 
-    def __init__(self, data: Dict[str, str], type: OptionType):
+    def __init__(self, data: Dict[str, str], type: AppCommandOptionType):
         self.name: str = data['name']
-        if type is OptionType.string:
-            self.value: str = data['value']  # type: ignore
-        elif type is OptionType.integer:
-            self.value: int = int(data['value'])  # type: ignore
-        elif type is OptionType.number:
-            self.value: float = float(data['value'])  # type: ignore
+        self.value: Union[str, int, float]
+        if type is AppCommandOptionType.string:
+            self.value = data['value']
+        elif type is AppCommandOptionType.integer:
+            self.value = int(data['value'])
+        elif type is AppCommandOptionType.number:
+            self.value = float(data['value'])
+
+    def __str__(self) -> str:
+        return self.name
 
     def __repr__(self) -> str:
-        return f'<OptionChoice name={self.name} value={self.value}>'
+        return f'<OptionChoice name={self.name!r} value={self.value!r}>'
 
     def _convert(self, value):
         if value == self.name:
@@ -699,13 +781,13 @@ class OptionChoice:
         return value
 
 
-def _command_factory(command_type: int) -> Tuple[CommandType, BaseCommand]:
-    value = try_enum(CommandType, command_type)
-    if value is CommandType.chat_input:
+def _command_factory(command_type: int) -> Tuple[AppCommandType, Type[BaseCommand]]:
+    value = try_enum(AppCommandType, command_type)
+    if value is AppCommandType.chat_input:
         return value, SlashCommand
-    elif value is CommandType.user:
+    elif value is AppCommandType.user:
         return value, UserCommand
-    elif value is CommandType.message:
+    elif value is AppCommandType.message:
         return value, MessageCommand
     else:
         return value, BaseCommand  # IDK about this

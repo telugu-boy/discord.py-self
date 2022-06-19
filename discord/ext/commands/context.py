@@ -23,40 +23,40 @@ DEALINGS IN THE SOFTWARE.
 """
 from __future__ import annotations
 
-import inspect
 import re
-
-from typing import Any, Dict, Generic, List, Optional, TYPE_CHECKING, TypeVar, Union
+from typing import TYPE_CHECKING, Any, AsyncIterator, Dict, Generic, List, Optional, TypeVar, Union
 
 import discord.abc
 import discord.utils
-
+from discord.utils import MISSING
 from discord.message import Message
+
+from ._types import BotT
 
 if TYPE_CHECKING:
     from typing_extensions import ParamSpec
 
     from discord.abc import MessageableChannel
+    from discord.commands import MessageCommand
     from discord.guild import Guild
     from discord.member import Member
     from discord.state import ConnectionState
     from discord.user import ClientUser, User
     from discord.voice_client import VoiceProtocol
 
-    from .bot import Bot
     from .cog import Cog
     from .core import Command
+    from .parameters import Parameter
     from .view import StringView
 
+# fmt: off
 __all__ = (
     'Context',
 )
-
-MISSING: Any = discord.utils.MISSING
+# fmt: on
 
 
 T = TypeVar('T')
-BotT = TypeVar('BotT', bound="Bot")
 CogT = TypeVar('CogT', bound="Cog")
 
 if TYPE_CHECKING:
@@ -88,8 +88,13 @@ class Context(discord.abc.Messageable, Generic[BotT]):
         A dictionary of transformed arguments that were passed into the command.
         Similar to :attr:`args`\, if this is accessed in the
         :func:`.on_command_error` event then this dict could be incomplete.
-    current_parameter: Optional[:class:`inspect.Parameter`]
+    current_parameter: Optional[:class:`Parameter`]
         The parameter that is currently being inspected and converted.
+        This is only of use for within converters.
+
+        .. versionadded:: 2.0
+    current_argument: Optional[:class:`str`]
+        The argument string of the :attr:`current_parameter` that is currently being converted.
         This is only of use for within converters.
 
         .. versionadded:: 2.0
@@ -121,7 +126,8 @@ class Context(discord.abc.Messageable, Generic[BotT]):
         or invoked.
     """
 
-    def __init__(self,
+    def __init__(
+        self,
         *,
         message: Message,
         bot: BotT,
@@ -129,27 +135,29 @@ class Context(discord.abc.Messageable, Generic[BotT]):
         args: List[Any] = MISSING,
         kwargs: Dict[str, Any] = MISSING,
         prefix: Optional[str] = None,
-        command: Optional[Command] = None,
+        command: Optional[Command[Any, ..., Any]] = None,
         invoked_with: Optional[str] = None,
         invoked_parents: List[str] = MISSING,
-        invoked_subcommand: Optional[Command] = None,
+        invoked_subcommand: Optional[Command[Any, ..., Any]] = None,
         subcommand_passed: Optional[str] = None,
         command_failed: bool = False,
-        current_parameter: Optional[inspect.Parameter] = None,
+        current_parameter: Optional[Parameter] = None,
+        current_argument: Optional[str] = None,
     ):
         self.message: Message = message
         self.bot: BotT = bot
         self.args: List[Any] = args or []
         self.kwargs: Dict[str, Any] = kwargs or {}
         self.prefix: Optional[str] = prefix
-        self.command: Optional[Command] = command
+        self.command: Optional[Command[Any, ..., Any]] = command
         self.view: StringView = view
         self.invoked_with: Optional[str] = invoked_with
         self.invoked_parents: List[str] = invoked_parents or []
-        self.invoked_subcommand: Optional[Command] = invoked_subcommand
+        self.invoked_subcommand: Optional[Command[Any, ..., Any]] = invoked_subcommand
         self.subcommand_passed: Optional[str] = subcommand_passed
         self.command_failed: bool = command_failed
-        self.current_parameter: Optional[inspect.Parameter] = current_parameter
+        self.current_parameter: Optional[Parameter] = current_parameter
+        self.current_argument: Optional[str] = current_argument
         self._state: ConnectionState = self.message._state
 
     async def invoke(self, command: Command[CogT, P, T], /, *args: P.args, **kwargs: P.kwargs) -> T:
@@ -168,6 +176,10 @@ class Context(discord.abc.Messageable, Generic[BotT]):
 
             You must take care in passing the proper arguments when
             using this function.
+
+        .. versionchanged:: 2.0
+
+            ``command`` parameter is now positional-only.
 
         Parameters
         -----------
@@ -232,7 +244,7 @@ class Context(discord.abc.Messageable, Generic[BotT]):
             view.index = len(self.prefix or '')
             view.previous = 0
             self.invoked_parents = []
-            self.invoked_with = view.get_word() # advance to get the root command
+            self.invoked_with = view.get_word()  # advance to get the root command
         else:
             to_call = cmd
 
@@ -343,7 +355,7 @@ class Context(discord.abc.Messageable, Generic[BotT]):
         Any
             The result of the help command, if any.
         """
-        from .core import Group, Command, wrap_callback
+        from .core import Command, Group, wrap_callback
         from .errors import CommandError
 
         bot = self.bot
@@ -354,6 +366,7 @@ class Context(discord.abc.Messageable, Generic[BotT]):
 
         cmd = cmd.copy()
         cmd.context = self
+
         if len(args) == 0:
             await cmd.prepare_help_command(self, None)
             mapping = cmd.get_bot_mapping()
@@ -397,3 +410,17 @@ class Context(discord.abc.Messageable, Generic[BotT]):
     @discord.utils.copy_doc(Message.reply)
     async def reply(self, content: Optional[str] = None, **kwargs: Any) -> Message:
         return await self.message.reply(content, **kwargs)
+
+    async def message_commands(
+        self,
+        query: Optional[str] = None,
+        *,
+        limit: Optional[int] = None,
+        command_ids: Optional[List[int]] = None,
+        application: Optional[discord.abc.Snowflake] = None,
+        include_applications: bool = True,
+    ) -> AsyncIterator[MessageCommand]:
+        async for command in self.message.message_commands(
+            query, limit=limit, command_ids=command_ids, include_applications=include_applications, application=application
+        ):
+            yield command

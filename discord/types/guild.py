@@ -23,13 +23,17 @@ DEALINGS IN THE SOFTWARE.
 """
 
 from typing import List, Literal, Optional, TypedDict
+from typing_extensions import NotRequired
+
+from .scheduled_event import GuildScheduledEvent
+from .sticker import GuildSticker
 from .snowflake import Snowflake
-from .channel import GuildChannel
+from .channel import GuildChannel, StageInstance
 from .voice import GuildVoiceState
 from .welcome_screen import WelcomeScreen
 from .activity import PartialPresenceUpdate
 from .role import Role
-from .member import Member
+from .member import MemberWithUser
 from .emoji import Emoji
 from .user import User
 from .threads import Thread
@@ -40,32 +44,9 @@ class Ban(TypedDict):
     user: User
 
 
-class _UnavailableGuildOptional(TypedDict, total=False):
-    unavailable: bool
-
-
-class UnavailableGuild(_UnavailableGuildOptional):
+class UnavailableGuild(TypedDict):
     id: Snowflake
-
-
-class _GuildOptional(TypedDict, total=False):
-    icon_hash: Optional[str]
-    owner: bool
-    permissions: str
-    widget_enabled: bool
-    widget_channel_id: Optional[Snowflake]
-    joined_at: Optional[str]
-    large: bool
-    member_count: int
-    voice_states: List[GuildVoiceState]
-    members: List[Member]
-    channels: List[GuildChannel]
-    presences: List[PartialPresenceUpdate]
-    threads: List[Thread]
-    max_presences: Optional[int]
-    max_members: int
-    premium_subscription_count: int
-    max_video_channel_users: int
+    unavailable: NotRequired[bool]
 
 
 DefaultMessageNotificationLevel = Literal[0, 1]
@@ -74,30 +55,6 @@ MFALevel = Literal[0, 1]
 VerificationLevel = Literal[0, 1, 2, 3, 4]
 NSFWLevel = Literal[0, 1, 2, 3]
 PremiumTier = Literal[0, 1, 2, 3]
-GuildFeature = Literal[
-    'ANIMATED_ICON',
-    'BANNER',
-    'COMMERCE',
-    'COMMUNITY',
-    'DISCOVERABLE',
-    'FEATURABLE',
-    'INVITE_SPLASH',
-    'MEMBER_VERIFICATION_GATE_ENABLED',
-    'MONETIZATION_ENABLED',
-    'MORE_EMOJI',
-    'MORE_STICKERS',
-    'NEWS',
-    'PARTNERED',
-    'PREVIEW_ENABLED',
-    'PRIVATE_THREADS',
-    'SEVEN_DAY_THREAD_ARCHIVE',
-    'THREE_DAY_THREAD_ARCHIVE',
-    'TICKETED_EVENTS_ENABLED',
-    'VANITY_URL',
-    'VERIFIED',
-    'VIP_REGIONS',
-    'WELCOME_SCREEN_ENABLED',
-]
 
 
 class _BaseGuildPreview(UnavailableGuild):
@@ -106,7 +63,8 @@ class _BaseGuildPreview(UnavailableGuild):
     splash: Optional[str]
     discovery_splash: Optional[str]
     emojis: List[Emoji]
-    features: List[GuildFeature]
+    stickers: List[GuildSticker]
+    features: List[str]
     description: Optional[str]
 
 
@@ -119,7 +77,7 @@ class GuildPreview(_BaseGuildPreview, _GuildPreviewUnique):
     ...
 
 
-class Guild(_BaseGuildPreview, _GuildOptional):
+class Guild(_BaseGuildPreview):
     owner_id: Snowflake
     region: str
     afk_channel_id: Optional[Snowflake]
@@ -139,6 +97,26 @@ class Guild(_BaseGuildPreview, _GuildOptional):
     premium_tier: PremiumTier
     preferred_locale: str
     public_updates_channel_id: Optional[Snowflake]
+    stickers: List[GuildSticker]
+    stage_instances: List[StageInstance]
+    guild_scheduled_events: List[GuildScheduledEvent]
+    icon_hash: NotRequired[Optional[str]]
+    owner: NotRequired[bool]
+    permissions: NotRequired[str]
+    widget_enabled: NotRequired[bool]
+    widget_channel_id: NotRequired[Optional[Snowflake]]
+    joined_at: NotRequired[Optional[str]]
+    large: NotRequired[bool]
+    member_count: NotRequired[int]
+    voice_states: NotRequired[List[GuildVoiceState]]
+    members: NotRequired[List[MemberWithUser]]
+    channels: NotRequired[List[GuildChannel]]
+    presences: NotRequired[List[PartialPresenceUpdate]]
+    threads: NotRequired[List[Thread]]
+    max_presences: NotRequired[Optional[int]]
+    max_members: NotRequired[int]
+    premium_subscription_count: NotRequired[int]
+    max_video_channel_users: NotRequired[int]
 
 
 class InviteGuild(Guild, total=False):
@@ -166,3 +144,8 @@ class _RolePositionRequired(TypedDict):
 
 class RolePositionUpdate(_RolePositionRequired, total=False):
     position: Optional[Snowflake]
+
+
+class SupplementalGuild(UnavailableGuild):
+    embedded_activities: list
+    voice_states: List[GuildVoiceState]

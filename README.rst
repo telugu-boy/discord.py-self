@@ -1,22 +1,32 @@
-discord.py
-==========
+discord.py-self
+================
 
-.. image:: https://discord.com/api/guilds/336642139381301249/embed.png
-   :target: https://discord.gg/r3sSKJJ
-   :alt: Discord server invite
-.. image:: https://img.shields.io/pypi/v/discord.py.svg
-   :target: https://pypi.python.org/pypi/discord.py
+.. image:: https://img.shields.io/endpoint?url=https%3A%2F%2Frunkit.io%2Fdamiankrawczyk%2Ftelegram-badge%2Fbranches%2Fmaster%3Furl%3Dhttps%3A%2F%2Ft.me%2Fdpy_self
+   :target: https://t.me/dpy_self
+   :alt: Telegram chat
+.. image:: https://img.shields.io/pypi/v/discord.py-self.svg
+   :target: https://pypi.python.org/pypi/discord.py-self
    :alt: PyPI version info
 .. image:: https://img.shields.io/pypi/pyversions/discord.py.svg
-   :target: https://pypi.python.org/pypi/discord.py
+   :target: https://pypi.python.org/pypi/discord.py-self
    :alt: PyPI supported Python versions
+.. image:: https://img.shields.io/pypi/dm/discord.py-self.svg
+   :target: https://pypi.python.org/pypi/discord.py-self
+   :alt: PyPI downloads per month
 
-A modern, easy to use, feature-rich, and async ready API wrapper for Discord written in Python.
+A modern, easy to use, feature-rich, and async ready API wrapper for Discord's user API written in Python.
 
-The Future of discord.py
---------------------------
+Fork Changes
+------------
 
-Please read the `gist <https://gist.github.com/Rapptz/4a2f62751b9600a31a0d3c78100287f1>`_ for the future of this project. It's been a good one.
+These changes have become too numerous to mention, so check out our `docs <https://discordpy-self.readthedocs.io/en/latest/index.html>`_.
+
+| **Credits:**
+| - `arandomnewaccount <https://www.reddit.com/user/obviouslymymain123/>`_ for Discord API help.
+|
+
+| **Note:**
+| Automating user accounts is against the Discord ToS. This library is a proof of concept and I do not recommend using it. Do so at your own risk.
 
 Key Features
 -------------
@@ -24,6 +34,8 @@ Key Features
 - Modern Pythonic API using ``async`` and ``await``.
 - Proper rate limit handling.
 - Optimised in both speed and memory.
+- Mostly compatible with the official ``discord.py``.
+- Prevents selfbot detection.
 
 Installing
 ----------
@@ -35,28 +47,28 @@ To install the library without full voice support, you can just run the followin
 .. code:: sh
 
     # Linux/macOS
-    python3 -m pip install -U discord.py
+    python3 -m pip install -U discord.py-self
 
     # Windows
-    py -3 -m pip install -U discord.py
+    py -3 -m pip install -U discord.py-self
 
 Otherwise to get voice support you should run the following command:
 
 .. code:: sh
 
     # Linux/macOS
-    python3 -m pip install -U "discord.py[voice]"
+    python3 -m pip install -U "discord.py-self[voice]"
 
     # Windows
-    py -3 -m pip install -U discord.py[voice]
+    py -3 -m pip install -U discord.py-self[voice]
 
 
 To install the development version, do the following:
 
 .. code:: sh
 
-    $ git clone https://github.com/Rapptz/discord.py
-    $ cd discord.py
+    $ git clone https://github.com/dolfies/discord.py-self
+    $ cd discord.py-self
     $ python3 -m pip install -U .[voice]
 
 
@@ -82,8 +94,8 @@ Quick Example
             print('Logged on as', self.user)
 
         async def on_message(self, message):
-            # don't respond to ourselves
-            if message.author == self.user:
+            # only respond to ourselves
+            if message.author != self.user:
                 return
 
             if message.content == 'ping':
@@ -100,7 +112,7 @@ Bot Example
     import discord
     from discord.ext import commands
 
-    bot = commands.Bot(command_prefix='>')
+    bot = commands.Bot(command_prefix='>', self_bot=True)
 
     @bot.command()
     async def ping(ctx):
@@ -113,6 +125,6 @@ You can find more examples in the examples directory.
 Links
 ------
 
-- `Documentation <https://discordpy.readthedocs.io/en/latest/index.html>`_
-- `Official Discord Server <https://discord.gg/r3sSKJJ>`_
-- `Discord API <https://discord.gg/discord-api>`_
+- `Documentation <https://discordpy-self.readthedocs.io/en/latest/index.html>`_
+- `Project updates <https://t.me/dpy_self>`_
+- `Discussion & support <https://t.me/dpy_self_discussions>`_

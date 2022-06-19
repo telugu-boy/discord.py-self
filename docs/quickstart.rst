@@ -29,7 +29,7 @@ It looks something like this:
 
     @client.event
     async def on_message(message):
-        if message.author == client.user:
+        if message.author != client.user:
             return
 
         if message.content.startswith('$hello'):

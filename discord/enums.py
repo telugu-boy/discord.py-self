@@ -21,16 +21,16 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
 FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 """
+from __future__ import annotations
 
 import types
 from collections import namedtuple
-from typing import Any, ClassVar, Dict, List, Optional, TYPE_CHECKING, Type, TypeVar
+from typing import Any, ClassVar, Dict, List, Optional, TYPE_CHECKING, Tuple, Type, TypeVar, Iterator, Mapping
 
 __all__ = (
     'Enum',
     'ChannelType',
     'MessageType',
-    'VoiceRegion',
     'SpeakingState',
     'VerificationLevel',
     'ContentFilter',
@@ -51,9 +51,16 @@ __all__ = (
     'VideoQualityMode',
     'ComponentType',
     'ButtonStyle',
+    'TextStyle',
     'PrivacyLevel',
     'InteractionType',
     'NSFWLevel',
+    'MFALevel',
+    'Locale',
+    'EntityType',
+    'EventStatus',
+    'AppCommandType',
+    'AppCommandOptionType',
     'RelationshipType',
     'HypeSquadHouse',
     'PremiumType',
@@ -65,9 +72,6 @@ __all__ = (
     'UnavailableGuildType',
     'RequiredActionType',
     'ReportType',
-    'BrowserEnum',
-    'CommandType',
-    'OptionType',
     'ApplicationVerificationState',
     'StoreApplicationState',
     'RPCApplicationState',
@@ -75,19 +79,26 @@ __all__ = (
     'ScheduledEventStatus',
     'ScheduledEventEntityType',
     'ApplicationType',
+    'ConnectionType',
 )
 
+if TYPE_CHECKING:
+    from typing_extensions import Self
 
-def _create_value_cls(name, comparable):
+
+def _create_value_cls(name: str, comparable: bool):
+    # All the type ignores here are due to the type checker being unable to recognise
+    # Runtime type creation without exploding.
     cls = namedtuple('_EnumValue_' + name, 'name value')
-    cls.__repr__ = lambda self: f'<{name}.{self.name}: {self.value!r}>'
-    cls.__str__ = lambda self: f'{name}.{self.name}'
+    cls.__repr__ = lambda self: f'<{name}.{self.name}: {self.value!r}>'  # type: ignore
+    cls.__str__ = lambda self: f'{name}.{self.name}'  # type: ignore
     if comparable:
-        cls.__le__ = lambda self, other: isinstance(other, self.__class__) and self.value <= other.value
-        cls.__ge__ = lambda self, other: isinstance(other, self.__class__) and self.value >= other.value
-        cls.__lt__ = lambda self, other: isinstance(other, self.__class__) and self.value < other.value
-        cls.__gt__ = lambda self, other: isinstance(other, self.__class__) and self.value > other.value
+        cls.__le__ = lambda self, other: isinstance(other, self.__class__) and self.value <= other.value  # type: ignore
+        cls.__ge__ = lambda self, other: isinstance(other, self.__class__) and self.value >= other.value  # type: ignore
+        cls.__lt__ = lambda self, other: isinstance(other, self.__class__) and self.value < other.value  # type: ignore
+        cls.__gt__ = lambda self, other: isinstance(other, self.__class__) and self.value > other.value  # type: ignore
     return cls
+
 
 def _is_descriptor(obj):
     return hasattr(obj, '__get__') or hasattr(obj, '__set__') or hasattr(obj, '__delete__')
@@ -100,7 +111,7 @@ class EnumMeta(type):
         _enum_member_map_: ClassVar[Dict[str, Any]]
         _enum_value_map_: ClassVar[Dict[Any, Any]]
 
-    def __new__(cls, name, bases, attrs, *, comparable: bool = False):
+    def __new__(cls, name: str, bases: Tuple[type, ...], attrs: Dict[str, Any], *, comparable: bool = False) -> Self:
         value_mapping = {}
         member_mapping = {}
         member_names = []
@@ -135,41 +146,41 @@ class EnumMeta(type):
         attrs['_enum_member_names_'] = member_names
         attrs['_enum_value_cls_'] = value_cls
         actual_cls = super().__new__(cls, name, bases, attrs)
-        value_cls._actual_enum_cls_ = actual_cls  # type: ignore
+        value_cls._actual_enum_cls_ = actual_cls  # type: ignore # Runtime attribute isn't understood
         return actual_cls
 
-    def __iter__(cls):
+    def __iter__(cls) -> Iterator[Any]:
         return (cls._enum_member_map_[name] for name in cls._enum_member_names_)
 
-    def __reversed__(cls):
+    def __reversed__(cls) -> Iterator[Any]:
         return (cls._enum_member_map_[name] for name in reversed(cls._enum_member_names_))
 
-    def __len__(cls):
+    def __len__(cls) -> int:
         return len(cls._enum_member_names_)
 
-    def __repr__(cls):
+    def __repr__(cls) -> str:
         return f'<enum {cls.__name__}>'
 
     @property
-    def __members__(cls):
+    def __members__(cls) -> Mapping[str, Any]:
         return types.MappingProxyType(cls._enum_member_map_)
 
-    def __call__(cls, value):
+    def __call__(cls, value: str) -> Any:
         try:
             return cls._enum_value_map_[value]
         except (KeyError, TypeError):
             raise ValueError(f"{value!r} is not a valid {cls.__name__}")
 
-    def __getitem__(cls, key):
+    def __getitem__(cls, key: str) -> Any:
         return cls._enum_member_map_[key]
 
-    def __setattr__(cls, name, value):
+    def __setattr__(cls, name: str, value: Any) -> None:
         raise TypeError('Enums are immutable')
 
-    def __delattr__(cls, attr):
+    def __delattr__(cls, attr: str) -> None:
         raise TypeError('Enums are immutable')
 
-    def __instancecheck__(self, instance):
+    def __instancecheck__(self, instance: Any) -> bool:
         # isinstance(x, Y)
         # -> __instancecheck__(Y, x)
         try:
@@ -203,8 +214,9 @@ class ChannelType(Enum):
     public_thread = 11
     private_thread = 12
     stage_voice = 13
+    forum = 15
 
-    def __str__(self):
+    def __str__(self) -> str:
         return self.name
 
     def __int__(self):
@@ -241,48 +253,16 @@ class MessageType(Enum):
     context_menu_command = 23
 
 
-class VoiceRegion(Enum):
-    us_west = 'us-west'
-    us_east = 'us-east'
-    us_south = 'us-south'
-    us_central = 'us-central'
-    eu_west = 'eu-west'
-    eu_central = 'eu-central'
-    singapore = 'singapore'
-    london = 'london'
-    sydney = 'sydney'
-    amsterdam = 'amsterdam'
-    frankfurt = 'frankfurt'
-    brazil = 'brazil'
-    hongkong = 'hongkong'
-    hong_kong = 'hongkong'
-    rotterdam = 'rotterdam'
-    russia = 'russia'
-    japan = 'japan'
-    southafrica = 'southafrica'
-    south_africa = 'southafrica'
-    south_korea = 'south-korea'
-    india = 'india'
-    europe = 'europe'
-    dubai = 'dubai'
-    vip_us_east = 'vip-us-east'
-    vip_us_west = 'vip-us-west'
-    vip_amsterdam = 'vip-amsterdam'
-
-    def __str__(self):
-        return self.value
-
-
 class SpeakingState(Enum):
     none = 0
     voice = 1
     soundshare = 2
     priority = 4
 
-    def __str__(self):
+    def __str__(self) -> str:
         return self.name
 
-    def __int__(self):
+    def __int__(self) -> int:
         return self.value
 
 
@@ -293,7 +273,7 @@ class VerificationLevel(Enum, comparable=True):
     high = 3
     highest = 4
 
-    def __str__(self):
+    def __str__(self) -> str:
         return self.name
 
 
@@ -302,28 +282,28 @@ class ContentFilter(Enum, comparable=True):
     no_role = 1
     all_members = 2
 
-    def __str__(self):
+    def __str__(self) -> str:
         return self.name
 
 
 class UserContentFilter(Enum):
-    always         = 0
-    on_interaction = 1
-    never          = 2
+    disabled = 0
+    non_friends = 1
+    all_messages = 2
 
 
 class StickerAnimationOptions(Enum):
-    disabled     = 2
-    friends      = 1
-    all_messages = 0
+    always = 0
+    on_interaction = 1
+    never = 2
 
 
 class FriendFlags(Enum):
-    noone             = 0
-    mutual_guilds     = 1
-    mutual_friends    = 2
+    noone = 0
+    mutual_guilds = 1
+    mutual_friends = 2
     guild_and_friends = 3
-    everyone          = 4
+    everyone = 4
 
     def to_dict(self):
         if self.value == 0:
@@ -368,7 +348,7 @@ class Status(Enum):
     do_not_disturb = 'dnd'
     invisible = 'invisible'
 
-    def __str__(self):
+    def __str__(self) -> str:
         return self.value
 
 
@@ -381,13 +361,13 @@ class DefaultAvatar(Enum):
     red = 4
     pink = 5
 
-    def __str__(self):
+    def __str__(self) -> str:
         return self.name
 
 
-class RelationshipType(Enum, comparable=True):
-    friend           = 1
-    blocked          = 2
+class RelationshipType(Enum):
+    friend = 1
+    blocked = 2
     incoming_request = 3
     outgoing_request = 4
 
@@ -454,6 +434,9 @@ class AuditLogAction(Enum):
     sticker_create           = 90
     sticker_update           = 91
     sticker_delete           = 92
+    scheduled_event_create   = 100
+    scheduled_event_update   = 101
+    scheduled_event_delete   = 102
     thread_create            = 110
     thread_update            = 111
     thread_delete            = 112
@@ -463,50 +446,53 @@ class AuditLogAction(Enum):
     def category(self) -> Optional[AuditLogActionCategory]:
         # fmt: off
         lookup: Dict[AuditLogAction, Optional[AuditLogActionCategory]] = {
-            AuditLogAction.guild_update:          AuditLogActionCategory.update,
-            AuditLogAction.channel_create:        AuditLogActionCategory.create,
-            AuditLogAction.channel_update:        AuditLogActionCategory.update,
-            AuditLogAction.channel_delete:        AuditLogActionCategory.delete,
-            AuditLogAction.overwrite_create:      AuditLogActionCategory.create,
-            AuditLogAction.overwrite_update:      AuditLogActionCategory.update,
-            AuditLogAction.overwrite_delete:      AuditLogActionCategory.delete,
-            AuditLogAction.kick:                  None,
-            AuditLogAction.member_prune:          None,
-            AuditLogAction.ban:                   None,
-            AuditLogAction.unban:                 None,
-            AuditLogAction.member_update:         AuditLogActionCategory.update,
-            AuditLogAction.member_role_update:    AuditLogActionCategory.update,
-            AuditLogAction.member_move:           None,
-            AuditLogAction.member_disconnect:     None,
-            AuditLogAction.bot_add:               None,
-            AuditLogAction.role_create:           AuditLogActionCategory.create,
-            AuditLogAction.role_update:           AuditLogActionCategory.update,
-            AuditLogAction.role_delete:           AuditLogActionCategory.delete,
-            AuditLogAction.invite_create:         AuditLogActionCategory.create,
-            AuditLogAction.invite_update:         AuditLogActionCategory.update,
-            AuditLogAction.invite_delete:         AuditLogActionCategory.delete,
-            AuditLogAction.webhook_create:        AuditLogActionCategory.create,
-            AuditLogAction.webhook_update:        AuditLogActionCategory.update,
-            AuditLogAction.webhook_delete:        AuditLogActionCategory.delete,
-            AuditLogAction.emoji_create:          AuditLogActionCategory.create,
-            AuditLogAction.emoji_update:          AuditLogActionCategory.update,
-            AuditLogAction.emoji_delete:          AuditLogActionCategory.delete,
-            AuditLogAction.message_delete:        AuditLogActionCategory.delete,
-            AuditLogAction.message_bulk_delete:   AuditLogActionCategory.delete,
-            AuditLogAction.message_pin:           None,
-            AuditLogAction.message_unpin:         None,
-            AuditLogAction.integration_create:    AuditLogActionCategory.create,
-            AuditLogAction.integration_update:    AuditLogActionCategory.update,
-            AuditLogAction.integration_delete:    AuditLogActionCategory.delete,
-            AuditLogAction.stage_instance_create: AuditLogActionCategory.create,
-            AuditLogAction.stage_instance_update: AuditLogActionCategory.update,
-            AuditLogAction.stage_instance_delete: AuditLogActionCategory.delete,
-            AuditLogAction.sticker_create:        AuditLogActionCategory.create,
-            AuditLogAction.sticker_update:        AuditLogActionCategory.update,
-            AuditLogAction.sticker_delete:        AuditLogActionCategory.delete,
-            AuditLogAction.thread_create:         AuditLogActionCategory.create,
-            AuditLogAction.thread_update:         AuditLogActionCategory.update,
-            AuditLogAction.thread_delete:         AuditLogActionCategory.delete,
+            AuditLogAction.guild_update:           AuditLogActionCategory.update,
+            AuditLogAction.channel_create:         AuditLogActionCategory.create,
+            AuditLogAction.channel_update:         AuditLogActionCategory.update,
+            AuditLogAction.channel_delete:         AuditLogActionCategory.delete,
+            AuditLogAction.overwrite_create:       AuditLogActionCategory.create,
+            AuditLogAction.overwrite_update:       AuditLogActionCategory.update,
+            AuditLogAction.overwrite_delete:       AuditLogActionCategory.delete,
+            AuditLogAction.kick:                   None,
+            AuditLogAction.member_prune:           None,
+            AuditLogAction.ban:                    None,
+            AuditLogAction.unban:                  None,
+            AuditLogAction.member_update:          AuditLogActionCategory.update,
+            AuditLogAction.member_role_update:     AuditLogActionCategory.update,
+            AuditLogAction.member_move:            None,
+            AuditLogAction.member_disconnect:      None,
+            AuditLogAction.bot_add:                None,
+            AuditLogAction.role_create:            AuditLogActionCategory.create,
+            AuditLogAction.role_update:            AuditLogActionCategory.update,
+            AuditLogAction.role_delete:            AuditLogActionCategory.delete,
+            AuditLogAction.invite_create:          AuditLogActionCategory.create,
+            AuditLogAction.invite_update:          AuditLogActionCategory.update,
+            AuditLogAction.invite_delete:          AuditLogActionCategory.delete,
+            AuditLogAction.webhook_create:         AuditLogActionCategory.create,
+            AuditLogAction.webhook_update:         AuditLogActionCategory.update,
+            AuditLogAction.webhook_delete:         AuditLogActionCategory.delete,
+            AuditLogAction.emoji_create:           AuditLogActionCategory.create,
+            AuditLogAction.emoji_update:           AuditLogActionCategory.update,
+            AuditLogAction.emoji_delete:           AuditLogActionCategory.delete,
+            AuditLogAction.message_delete:         AuditLogActionCategory.delete,
+            AuditLogAction.message_bulk_delete:    AuditLogActionCategory.delete,
+            AuditLogAction.message_pin:            None,
+            AuditLogAction.message_unpin:          None,
+            AuditLogAction.integration_create:     AuditLogActionCategory.create,
+            AuditLogAction.integration_update:     AuditLogActionCategory.update,
+            AuditLogAction.integration_delete:     AuditLogActionCategory.delete,
+            AuditLogAction.stage_instance_create:  AuditLogActionCategory.create,
+            AuditLogAction.stage_instance_update:  AuditLogActionCategory.update,
+            AuditLogAction.stage_instance_delete:  AuditLogActionCategory.delete,
+            AuditLogAction.sticker_create:         AuditLogActionCategory.create,
+            AuditLogAction.sticker_update:         AuditLogActionCategory.update,
+            AuditLogAction.sticker_delete:         AuditLogActionCategory.delete,
+            AuditLogAction.scheduled_event_create: AuditLogActionCategory.create,
+            AuditLogAction.scheduled_event_update: AuditLogActionCategory.update,
+            AuditLogAction.scheduled_event_delete: AuditLogActionCategory.delete,
+            AuditLogAction.thread_create:          AuditLogActionCategory.create,
+            AuditLogAction.thread_update:          AuditLogActionCategory.update,
+            AuditLogAction.thread_delete:          AuditLogActionCategory.delete,
         }
         # fmt: on
         return lookup[self]
@@ -540,6 +526,8 @@ class AuditLogAction(Enum):
             return 'stage_instance'
         elif v < 93:
             return 'sticker'
+        elif v < 103:
+            return 'guild_scheduled_event'
         elif v < 113:
             return 'thread'
 
@@ -567,6 +555,7 @@ class UserFlags(Enum):
     discord_certified_moderator = 262144
     bot_http_interactions = 524288
     spammer = 1048576
+    disable_premium = 2097152
 
 
 class ActivityType(Enum):
@@ -578,22 +567,22 @@ class ActivityType(Enum):
     custom = 4
     competing = 5
 
-    def __int__(self):
+    def __int__(self) -> int:
         return self.value
 
 
 class HypeSquadHouse(Enum):
-    bravery    = 1
+    bravery = 1
     brilliance = 2
-    balance    = 3
+    balance = 3
 
 
 class PremiumType(Enum, comparable=True):
     nitro_classic = 1
-    nitro         = 2
+    nitro = 2
 
 
-class TeamMembershipState(Enum):
+class TeamMembershipState(Enum, comparable=True):
     invited = 1
     accepted = 2
 
@@ -636,44 +625,35 @@ class StickerFormatType(Enum):
 
 class ReportType(Enum):
     illegal_content = 1
-    harassment      = 2
-    phishing        = 3
-    self_harm       = 4
-    nsfw_content    = 5
+    harassment = 2
+    phishing = 3
+    self_harm = 4
+    nsfw_content = 5
 
     def __int__(self):
         return self.value
 
 
 class RelationshipAction(Enum):
-    send_friend_request    = 'request'
-    unfriend               = 'unfriend'
-    accept_request         = 'accept'
-    deny_request           = 'deny'
-    block                  = 'block'
-    unblock                = 'unblock'
+    send_friend_request = 'request'
+    unfriend = 'unfriend'
+    accept_request = 'accept'
+    deny_request = 'deny'
+    block = 'block'
+    unblock = 'unblock'
     remove_pending_request = 'remove'
 
 
 class UnavailableGuildType(Enum):
     existing = 'ready'
-    joined   = 'joined'
+    joined = 'joined'
 
 
 class RequiredActionType(Enum):
-    verify_phone     = 'REQUIRE_VERIFIED_PHONE'
-    verify_email     = 'REQUIRE_VERIFIED_EMAIL'
+    verify_phone = 'REQUIRE_VERIFIED_PHONE'
+    verify_email = 'REQUIRE_VERIFIED_EMAIL'
     complete_captcha = 'REQUIRE_CAPTCHA'
-    accept_terms     = 'AGREEMENTS'
-
-
-class BrowserEnum(Enum):
-    google_chrome = 'chrome'
-    chrome = 'chrome'
-    chromium = 'chromium'
-    microsoft_edge = 'microsoft-edge'
-    edge = 'microsoft-edge'
-    opera = 'opera'
+    accept_terms = 'AGREEMENTS'
 
 
 class InviteTarget(Enum):
@@ -692,37 +672,18 @@ class InteractionType(Enum):
     ping = 1
     application_command = 2
     component = 3
+    autocomplete = 4
+    modal_submit = 5
 
-
-class CommandType(Enum):
-    chat_input = 1
-    chat = 1
-    slash = 1
-    user = 2
-    message = 3
-
-    def __int__(self):
+    def __int__(self) -> int:
         return self.value
-
-
-class OptionType(Enum):
-    sub_command = 1
-    sub_command_group = 2
-    string = 3
-    integer = 4
-    boolean = 5
-    user = 6
-    channel = 7
-    role = 8
-    mentionable = 9
-    number = 10
 
 
 class VideoQualityMode(Enum):
     auto = 1
     full = 2
 
-    def __int__(self):
+    def __int__(self) -> int:
         return self.value
 
 
@@ -730,8 +691,9 @@ class ComponentType(Enum):
     action_row = 1
     button = 2
     select = 3
+    text_input = 4
 
-    def __int__(self):
+    def __int__(self) -> int:
         return self.value
 
 
@@ -750,7 +712,18 @@ class ButtonStyle(Enum):
     red = 4
     url = 5
 
-    def __int__(self):
+    def __int__(self) -> int:
+        return self.value
+
+
+class TextStyle(Enum):
+    short = 1
+    paragraph = 2
+
+    # Aliases
+    long = 2
+
+    def __int__(self) -> int:
         return self.value
 
 
@@ -778,6 +751,11 @@ class NSFWLevel(Enum, comparable=True):
     explicit = 1
     safe = 2
     age_restricted = 3
+
+
+class MFALevel(Enum, comparable=True):
+    disabled = 0
+    require_2fa = 1
 
 
 class ApplicationVerificationState(Enum, comparable=True):
@@ -816,19 +794,118 @@ class ApplicationType(Enum):
 T = TypeVar('T')
 
 
-def create_unknown_value(cls: Type[T], val: Any) -> T:
-    value_cls = cls._enum_value_cls_  # type: ignore
+class Locale(Enum):
+    american_english = 'en-US'
+    british_english = 'en-GB'
+    bulgarian = 'bg'
+    chinese = 'zh-CN'
+    taiwan_chinese = 'zh-TW'
+    croatian = 'hr'
+    czech = 'cs'
+    danish = 'da'
+    dutch = 'nl'
+    finnish = 'fi'
+    french = 'fr'
+    german = 'de'
+    greek = 'el'
+    hindi = 'hi'
+    hungarian = 'hu'
+    italian = 'it'
+    japanese = 'ja'
+    korean = 'ko'
+    lithuanian = 'lt'
+    norwegian = 'no'
+    polish = 'pl'
+    brazil_portuguese = 'pt-BR'
+    romanian = 'ro'
+    russian = 'ru'
+    spain_spanish = 'es-ES'
+    swedish = 'sv-SE'
+    thai = 'th'
+    turkish = 'tr'
+    ukrainian = 'uk'
+    vietnamese = 'vi'
+
+    def __str__(self) -> str:
+        return self.value
+
+
+E = TypeVar('E', bound='Enum')
+
+
+class EntityType(Enum):
+    stage_instance = 1
+    voice = 2
+    external = 3
+
+
+class EventStatus(Enum):
+    scheduled = 1
+    active = 2
+    completed = 3
+    canceled = 4
+
+    ended = 3
+    cancelled = 4
+
+
+class AppCommandOptionType(Enum):
+    subcommand = 1
+    sub_command = 1
+    subcommand_group = 2
+    sub_command_group = 2
+    string = 3
+    integer = 4
+    boolean = 5
+    user = 6
+    channel = 7
+    role = 8
+    mentionable = 9
+    number = 10
+    attachment = 11
+
+
+class AppCommandType(Enum):
+    chat_input = 1
+    user = 2
+    message = 3
+
+    def __int__(self) -> int:
+        return self.value
+
+
+class ConnectionType(Enum):
+    battle_net = 'battlenet'
+    contacts = 'contacts'
+    epic_games = 'epicgames'
+    facebook = 'facebook'
+    github = 'github'
+    league_of_legends = 'leagueoflegends'
+    playstation = 'playstation'
+    reddit = 'reddit'
+    samsung = 'samsunggalaxy'
+    spotify = 'spotify'
+    skype = 'skype'
+    steam = 'steam'
+    twitch = 'twitch'
+    twitter = 'twitter'
+    youtube = 'youtube'
+    xbox = 'xbox'
+
+
+def create_unknown_value(cls: Type[E], val: Any) -> E:
+    value_cls = cls._enum_value_cls_  # type: ignore # This is narrowed below
     name = f'unknown_{val}'
     return value_cls(name=name, value=val)
 
 
-def try_enum(cls: Type[T], val: Any) -> T:
+def try_enum(cls: Type[E], val: Any) -> E:
     """A function that tries to turn the value into enum ``cls``.
 
     If it fails it returns a proxy invalid value instead.
     """
 
     try:
-        return cls._enum_value_map_[val]  # type: ignore
+        return cls._enum_value_map_[val]  # type: ignore # All errors are caught below
     except (KeyError, TypeError, AttributeError):
         return create_unknown_value(cls, val)

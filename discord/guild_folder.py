@@ -27,13 +27,18 @@ from __future__ import annotations
 from typing import List, Optional, TYPE_CHECKING
 
 from .colour import Colour
+from .object import Object
 
 if TYPE_CHECKING:
     from .guild import Guild
     from .state import ConnectionState
     from .types.snowflake import Snowflake
 
-__all__ = ('GuildFolder',)
+# fmt: off
+__all__ = (
+    'GuildFolder',
+)
+# fmt: on
 
 
 class GuildFolder:
@@ -42,6 +47,28 @@ class GuildFolder:
     .. note::
         Guilds not in folders *are* actually in folders API wise, with them being the only member.
         Because Discord.
+
+    .. container:: operations
+
+        .. describe:: x == y
+
+            Checks if two guild folders are equal.
+
+        .. describe:: x != y
+
+            Checks if two guild folders are not equal.
+
+        .. describe:: hash(x)
+
+            Return the folder's hash.
+
+        .. describe:: str(x)
+
+            Returns the folder's name.
+
+        .. describe:: len(x)
+
+            Returns the number of guilds in the folder.
 
     Attributes
     ----------
@@ -52,6 +79,7 @@ class GuildFolder:
     guilds: List[:class:`Guild`]
         The guilds in the folder.
     """
+
     __slots__ = ('_state', 'id', 'name', '_colour', 'guilds')
 
     def __init__(self, *, data, state: ConnectionState) -> None:
@@ -59,10 +87,30 @@ class GuildFolder:
         self.id: Snowflake = data['id']
         self.name: str = data['name']
         self._colour: int = data['color']
-        self.guilds: List[Guild] = list(filter(None, map(self._get_guild, data['guild_ids'])))
+        self.guilds: List[Guild] = list(filter(None, map(self._get_guild, data['guild_ids'])))  # type: ignore # Lying for better developer UX
+
+    def __str__(self) -> str:
+        return self.name or 'None'
+
+    def __repr__(self) -> str:
+        return f'<GuildFolder id={self.id} name={self.name} guilds={self.guilds!r}>'
+
+    def __eq__(self, other) -> bool:
+        return isinstance(other, GuildFolder) and self.id == other.id
+
+    def __ne__(self, other) -> bool:
+        if isinstance(other, GuildFolder):
+            return self.id != other.id
+        return True
+
+    def __hash__(self) -> int:
+        return hash(self.id)
+
+    def __len__(self) -> int:
+        return len(self.guilds)
 
     def _get_guild(self, id):
-        return self._state._get_guild(int(id))
+        return self._state._get_guild(int(id)) or Object(id=int(id))
 
     @property
     def colour(self) -> Optional[Colour]:
@@ -71,27 +119,12 @@ class GuildFolder:
         There is an alias for this called :attr:`color`.
         """
         colour = self._colour
-        return colour and Colour(colour)
+        return Colour(colour) if colour is not None else None
 
     @property
     def color(self) -> Optional[Colour]:
-        """Optional[:class:`Color`] The color of the folder.
+        """Optional[:class:`Colour`] The color of the folder.
 
         This is an alias for :attr:`colour`.
         """
         return self.colour
-
-    def __str__(self) -> str:
-        return self.name or 'None'
-
-    def __repr__(self) -> str:
-        return f'<GuildFolder id={self.id} name={self.name} guilds={self.guilds!r}>'
-
-    def __len__(self) -> int:
-        return len(self.name)
-
-    def __eq__(self, other) -> bool:
-        return isinstance(other, GuildFolder) and self.id == other.id
-
-    def __ne__(self, other) -> bool:
-        return not self.__eq__(other)

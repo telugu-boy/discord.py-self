@@ -25,11 +25,13 @@ from __future__ import annotations
 
 import array
 import asyncio
-import collections.abc
 from typing import (
     Any,
+    AsyncIterable,
     AsyncIterator,
+    Awaitable,
     Callable,
+    Coroutine,
     Dict,
     ForwardRef,
     Generic,
@@ -38,8 +40,10 @@ from typing import (
     List,
     Literal,
     Mapping,
+    NamedTuple,
     Optional,
     Protocol,
+    Set,
     Sequence,
     Tuple,
     Type,
@@ -48,6 +52,7 @@ from typing import (
     overload,
     TYPE_CHECKING,
 )
+import collections
 import unicodedata
 from base64 import b64encode
 from bisect import bisect_left
@@ -57,23 +62,18 @@ from inspect import isawaitable as _isawaitable, signature as _signature
 from operator import attrgetter
 import json
 import logging
-import os
-import platform
 import random
 import re
 import string
-import subprocess
 import sys
-import tempfile
 from threading import Timer
 import types
 import warnings
 
-from .enums import BrowserEnum
-from .errors import InvalidArgument
+import yarl
 
 try:
-    import orjson
+    import orjson  # type: ignore
 except ModuleNotFoundError:
     HAS_ORJSON = False
 else:
@@ -108,6 +108,9 @@ class _MissingSentinel:
     def __bool__(self):
         return False
 
+    def __hash__(self):
+        return 0
+
     def __repr__(self):
         return '...'
 
@@ -134,7 +137,7 @@ if TYPE_CHECKING:
     from aiohttp import ClientSession
     from functools import cached_property as cached_property
 
-    from typing_extensions import ParamSpec
+    from typing_extensions import ParamSpec, Self
 
     from .permissions import Permissions
     from .abc import Messageable, Snowflake
@@ -146,16 +149,22 @@ if TYPE_CHECKING:
     class _RequestLike(Protocol):
         headers: Mapping[str, Any]
 
-
     P = ParamSpec('P')
+
+    MaybeAwaitableFunc = Callable[P, 'MaybeAwaitable[T]']
+
+    _SnowflakeListBase = array.array[int]
 
 else:
     cached_property = _cached_property
+    _SnowflakeListBase = array.array
 
 
 T = TypeVar('T')
 T_co = TypeVar('T_co', covariant=True)
-_Iter = Union[Iterator[T], AsyncIterator[T]]
+_Iter = Union[Iterable[T], AsyncIterable[T]]
+Coro = Coroutine[Any, Any, T]
+MaybeAwaitable = Union[T, Awaitable[T]]
 
 
 class CachedSlotProperty(Generic[T, T_co]):
@@ -191,7 +200,7 @@ class classproperty(Generic[T_co]):
     def __get__(self, instance: Optional[Any], owner: Type[Any]) -> T_co:
         return self.fget(owner)
 
-    def __set__(self, instance, value) -> None:
+    def __set__(self, instance: Optional[Any], value: Any) -> None:
         raise AttributeError('cannot set attribute')
 
 
@@ -202,7 +211,7 @@ def cached_slot_property(name: str) -> Callable[[Callable[[T], T_co]], CachedSlo
     return decorator
 
 
-class SequenceProxy(Generic[T_co], collections.abc.Sequence):
+class SequenceProxy(Sequence[T_co]):
     """Read-only proxy of a Sequence."""
 
     def __init__(self, proxied: Sequence[T_co]):
@@ -223,7 +232,7 @@ class SequenceProxy(Generic[T_co], collections.abc.Sequence):
     def __reversed__(self) -> Iterator[T_co]:
         return reversed(self.__proxied)
 
-    def index(self, value: Any, *args, **kwargs) -> int:
+    def index(self, value: Any, *args: Any, **kwargs: Any) -> int:
         return self.__proxied.index(value, *args, **kwargs)
 
     def count(self, value: Any) -> int:
@@ -252,10 +261,10 @@ def parse_time(timestamp: Optional[str]) -> Optional[datetime.datetime]:
 
 
 def copy_doc(original: Callable) -> Callable[[T], T]:
-    def decorator(overriden: T) -> T:
-        overriden.__doc__ = original.__doc__
-        overriden.__signature__ = _signature(original)  # type: ignore
-        return overriden
+    def decorator(overridden: T) -> T:
+        overridden.__doc__ = original.__doc__
+        overridden.__signature__ = _signature(original)  # type: ignore
+        return overridden
 
     return decorator
 
@@ -290,6 +299,11 @@ def oauth_url(
 ) -> str:
     """A helper function that returns the OAuth2 URL for inviting a bot
     into guilds.
+
+    .. versionchanged:: 2.0
+
+        ``permissions``, ``guild``, ``redirect_uri``, and ``scopes`` parameters
+        are now keyword-only.
 
     Parameters
     -----------
@@ -370,11 +384,33 @@ def time_snowflake(dt: datetime.datetime, high: bool = False) -> int:
         The snowflake representing the time given.
     """
     discord_millis = int(dt.timestamp() * 1000 - DISCORD_EPOCH)
-    return (discord_millis << 22) + (2 ** 22 - 1 if high else 0)
+    return (discord_millis << 22) + (2**22 - 1 if high else 0)
 
 
-def find(predicate: Callable[[T], Any], seq: Iterable[T]) -> Optional[T]:
-    """A helper to return the first element found in the sequence
+def _find(predicate: Callable[[T], Any], iterable: Iterable[T], /) -> Optional[T]:
+    return next((element for element in iterable if predicate(element)), None)
+
+
+async def _afind(predicate: Callable[[T], Any], iterable: AsyncIterable[T], /) -> Optional[T]:
+    async for element in iterable:
+        if predicate(element):
+            return element
+
+    return None
+
+
+@overload
+def find(predicate: Callable[[T], Any], iterable: Iterable[T], /) -> Optional[T]:
+    ...
+
+
+@overload
+def find(predicate: Callable[[T], Any], iterable: AsyncIterable[T], /) -> Coro[Optional[T]]:
+    ...
+
+
+def find(predicate: Callable[[T], Any], iterable: _Iter[T], /) -> Union[Optional[T], Coro[Optional[T]]]:
+    r"""A helper to return the first element found in the sequence
     that meets the predicate. For example: ::
 
         member = discord.utils.find(lambda m: m.name == 'Mighty', channel.guild.members)
@@ -385,21 +421,81 @@ def find(predicate: Callable[[T], Any], seq: Iterable[T]) -> Optional[T]:
     This is different from :func:`py:filter` due to the fact it stops the moment it finds
     a valid entry.
 
+    .. versionchanged:: 2.0
+
+        Both parameters are now positional-only.
+
+    .. versionchanged:: 2.0
+
+        The ``iterable`` parameter supports :term:`asynchronous iterable`\s.
+
     Parameters
     -----------
     predicate
         A function that returns a boolean-like result.
-    seq: :class:`collections.abc.Iterable`
-        The iterable to search through.
+    iterable: Union[:class:`collections.abc.Iterable`, :class:`collections.abc.AsyncIterable`]
+        The iterable to search through. Using a :class:`collections.abc.AsyncIterable`,
+        makes this function return a :term:`coroutine`.
     """
 
-    for element in seq:
-        if predicate(element):
-            return element
+    return (
+        _find(predicate, iterable)  # type: ignore
+        if hasattr(iterable, '__iter__')  # isinstance(iterable, collections.abc.Iterable) is too slow
+        else _afind(predicate, iterable)  # type: ignore
+    )
+
+
+def _get(iterable: Iterable[T], /, **attrs: Any) -> Optional[T]:
+    # global -> local
+    _all = all
+    attrget = attrgetter
+
+    # Special case the single element call
+    if len(attrs) == 1:
+        k, v = attrs.popitem()
+        pred = attrget(k.replace('__', '.'))
+        return next((elem for elem in iterable if pred(elem) == v), None)
+
+    converted = [(attrget(attr.replace('__', '.')), value) for attr, value in attrs.items()]
+    for elem in iterable:
+        if _all(pred(elem) == value for pred, value in converted):
+            return elem
     return None
 
 
-def get(iterable: Iterable[T], **attrs: Any) -> Optional[T]:
+async def _aget(iterable: AsyncIterable[T], /, **attrs: Any) -> Optional[T]:
+    # global -> local
+    _all = all
+    attrget = attrgetter
+
+    # Special case the single element call
+    if len(attrs) == 1:
+        k, v = attrs.popitem()
+        pred = attrget(k.replace('__', '.'))
+        async for elem in iterable:
+            if pred(elem) == v:
+                return elem
+        return None
+
+    converted = [(attrget(attr.replace('__', '.')), value) for attr, value in attrs.items()]
+
+    async for elem in iterable:
+        if _all(pred(elem) == value for pred, value in converted):
+            return elem
+    return None
+
+
+@overload
+def get(iterable: Iterable[T], /, **attrs: Any) -> Optional[T]:
+    ...
+
+
+@overload
+def get(iterable: AsyncIterable[T], /, **attrs: Any) -> Coro[Optional[T]]:
+    ...
+
+
+def get(iterable: _Iter[T], /, **attrs: Any) -> Union[Optional[T], Coro[Optional[T]]]:
     r"""A helper that returns the first element in the iterable that meets
     all the traits passed in ``attrs``. This is an alternative for
     :func:`~discord.utils.find`.
@@ -413,6 +509,14 @@ def get(iterable: Iterable[T], **attrs: Any) -> Optional[T]:
 
     If nothing is found that matches the attributes passed, then
     ``None`` is returned.
+
+    .. versionchanged:: 2.0
+
+        The ``iterable`` parameter is now positional-only.
+
+    .. versionchanged:: 2.0
+
+        The ``iterable`` parameter supports :term:`asynchronous iterable`\s.
 
     Examples
     ---------
@@ -435,33 +539,26 @@ def get(iterable: Iterable[T], **attrs: Any) -> Optional[T]:
 
         channel = discord.utils.get(client.get_all_channels(), guild__name='Cool', name='general')
 
+    Async iterables:
+
+    .. code-block:: python3
+
+        msg = await discord.utils.get(channel.history(), author__name='Dave')
+
     Parameters
     -----------
-    iterable
-        An iterable to search through.
+    iterable: Union[:class:`collections.abc.Iterable`, :class:`collections.abc.AsyncIterable`]
+        The iterable to search through. Using a :class:`collections.abc.AsyncIterable`,
+        makes this function return a :term:`coroutine`.
     \*\*attrs
         Keyword arguments that denote attributes to search with.
     """
 
-    # global -> local
-    _all = all
-    attrget = attrgetter
-
-    # Special case the single element call
-    if len(attrs) == 1:
-        k, v = attrs.popitem()
-        pred = attrget(k.replace('__', '.'))
-        for elem in iterable:
-            if pred(elem) == v:
-                return elem
-        return None
-
-    converted = [(attrget(attr.replace('__', '.')), value) for attr, value in attrs.items()]
-
-    for elem in iterable:
-        if _all(pred(elem) == value for pred, value in converted):
-            return elem
-    return None
+    return (
+        _get(iterable, **attrs)  # type: ignore
+        if hasattr(iterable, '__iter__')  # isinstance(iterable, collections.abc.Iterable) is too slow
+        else _aget(iterable, **attrs)  # type: ignore
+    )
 
 
 def _unique(iterable: Iterable[T]) -> List[T]:
@@ -487,7 +584,7 @@ def _get_mime_type_for_image(data: bytes):
     elif data.startswith(b'RIFF') and data[8:12] == b'WEBP':
         return 'image/webp'
     else:
-        raise InvalidArgument('Unsupported image type given')
+        raise ValueError('Unsupported image type given')
 
 
 def _bytes_to_base64_data(data: bytes) -> str:
@@ -497,9 +594,13 @@ def _bytes_to_base64_data(data: bytes) -> str:
     return fmt.format(mime=mime, data=b64)
 
 
+def _is_submodule(parent: str, child: str) -> bool:
+    return parent == child or child.startswith(parent + '.')
+
+
 if HAS_ORJSON:
 
-    def _to_json(obj: Any) -> str:  # type: ignore
+    def _to_json(obj: Any) -> str:
         return orjson.dumps(obj).decode('utf-8')
 
     _from_json = orjson.loads  # type: ignore
@@ -523,15 +624,15 @@ def _parse_ratelimit_header(request: Any, *, use_clock: bool = False) -> float:
         return float(reset_after)
 
 
-async def maybe_coroutine(f, *args, **kwargs):
+async def maybe_coroutine(f: MaybeAwaitableFunc[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
     value = f(*args, **kwargs)
     if _isawaitable(value):
         return await value
     else:
-        return value
+        return value  # type: ignore
 
 
-async def async_all(gen, *, check=_isawaitable):
+async def async_all(gen: Iterable[Awaitable[T]], *, check: Callable[[T], bool] = _isawaitable) -> bool:
     for elem in gen:
         if check(elem):
             elem = await elem
@@ -540,7 +641,7 @@ async def async_all(gen, *, check=_isawaitable):
     return True
 
 
-async def sane_wait_for(futures, *, timeout):
+async def sane_wait_for(futures: Iterable[Awaitable[T]], *, timeout: Optional[float]) -> Set[asyncio.Task[T]]:
     ensured = [asyncio.ensure_future(fut) for fut in futures]
     done, pending = await asyncio.wait(ensured, timeout=timeout, return_when=asyncio.ALL_COMPLETED)
 
@@ -553,12 +654,12 @@ async def sane_wait_for(futures, *, timeout):
 def get_slots(cls: Type[Any]) -> Iterator[str]:
     for mro in reversed(cls.__mro__):
         try:
-            yield from mro.__slots__
+            yield from mro.__slots__  # type: ignore
         except AttributeError:
             continue
 
 
-def compute_timedelta(dt: datetime.datetime):
+def compute_timedelta(dt: datetime.datetime) -> float:
     if dt.tzinfo is None:
         dt = dt.astimezone()
     now = datetime.datetime.now(datetime.timezone.utc)
@@ -607,7 +708,7 @@ def valid_icon_size(size: int) -> bool:
     return not size & (size - 1) and 4096 >= size >= 16
 
 
-class SnowflakeList(array.array):
+class SnowflakeList(_SnowflakeListBase):
     """Internal data storage class to efficiently store a list of snowflakes.
 
     This should have the following characteristics:
@@ -626,7 +727,7 @@ class SnowflakeList(array.array):
         def __init__(self, data: Iterable[int], *, is_sorted: bool = False):
             ...
 
-    def __new__(cls, data: Iterable[int], *, is_sorted: bool = False):
+    def __new__(cls, data: Iterable[int], *, is_sorted: bool = False) -> Self:
         return array.array.__new__(cls, 'Q', data if is_sorted else sorted(data))  # type: ignore
 
     def add(self, element: int) -> None:
@@ -656,9 +757,17 @@ def _string_width(string: str, *, _IS_ASCII=_IS_ASCII) -> int:
     return sum(2 if func(char) in UNICODE_WIDE_CHAR_TYPE else 1 for char in string)
 
 
-def resolve_invite(invite: Union[Invite, str]) -> str:
-    """
-    Resolves an invite from a :class:`~discord.Invite`, URL or code.
+class ResolvedInvite(NamedTuple):
+    code: str
+    event: Optional[int]
+
+
+def resolve_invite(invite: Union[Invite, str]) -> ResolvedInvite:
+    """Resolves an invite from a :class:`~discord.Invite`, URL or code.
+
+    .. versionchanged:: 2.0
+        Now returns a :class:`.ResolvedInvite` instead of a
+        :class:`str`.
 
     Parameters
     -----------
@@ -667,19 +776,24 @@ def resolve_invite(invite: Union[Invite, str]) -> str:
 
     Returns
     --------
-    :class:`str`
-        The invite code.
+    :class:`.ResolvedInvite`
+        A data class containing the invite code and the event ID.
     """
     from .invite import Invite  # circular import
 
     if isinstance(invite, Invite):
-        return invite.code
+        return ResolvedInvite(invite.code, invite.scheduled_event_id)
     else:
-        rx = r'(?:https?\:\/\/)?discord(?:\.gg|(?:app)?\.com\/invite)\/(.+)'
+        rx = r'(?:https?\:\/\/)?discord(?:\.gg|(?:app)?\.com\/invite)\/[^/]+'
         m = re.match(rx, invite)
+
         if m:
-            return m.group(1)
-    return invite
+            url = yarl.URL(invite)
+            code = url.parts[-1]
+            event_id = url.query.get('event')
+
+            return ResolvedInvite(code, int(event_id) if event_id else None)
+    return ResolvedInvite(invite, None)
 
 
 def resolve_template(code: Union[Template, str]) -> str:
@@ -824,7 +938,7 @@ def escape_mentions(text: str) -> str:
     return re.sub(r'@(everyone|here|[!&]?[0-9]{17,20})', '@\u200b\\1', text)
 
 
-def _chunk(iterator: Iterator[T], max_size: int) -> Iterator[List[T]]:
+def _chunk(iterator: Iterable[T], max_size: int) -> Iterator[List[T]]:
     ret = []
     n = 0
     for item in iterator:
@@ -838,7 +952,7 @@ def _chunk(iterator: Iterator[T], max_size: int) -> Iterator[List[T]]:
         yield ret
 
 
-async def _achunk(iterator: AsyncIterator[T], max_size: int) -> AsyncIterator[List[T]]:
+async def _achunk(iterator: AsyncIterable[T], max_size: int) -> AsyncIterator[List[T]]:
     ret = []
     n = 0
     async for item in iterator:
@@ -853,12 +967,12 @@ async def _achunk(iterator: AsyncIterator[T], max_size: int) -> AsyncIterator[Li
 
 
 @overload
-def as_chunks(iterator: Iterator[T], max_size: int) -> Iterator[List[T]]:
+def as_chunks(iterator: Iterable[T], max_size: int) -> Iterator[List[T]]:
     ...
 
 
 @overload
-def as_chunks(iterator: AsyncIterator[T], max_size: int) -> AsyncIterator[List[T]]:
+def as_chunks(iterator: AsyncIterable[T], max_size: int) -> AsyncIterator[List[T]]:
     ...
 
 
@@ -869,7 +983,7 @@ def as_chunks(iterator: _Iter[T], max_size: int) -> _Iter[List[T]]:
 
     Parameters
     ----------
-    iterator: Union[:class:`collections.abc.Iterator`, :class:`collections.abc.AsyncIterator`]
+    iterator: Union[:class:`collections.abc.Iterable`, :class:`collections.abc.AsyncIterable`]
         The iterator to chunk, can be sync or async.
     max_size: :class:`int`
         The maximum chunk size.
@@ -887,7 +1001,7 @@ def as_chunks(iterator: _Iter[T], max_size: int) -> _Iter[List[T]]:
     if max_size <= 0:
         raise ValueError('Chunk sizes must be greater than 0.')
 
-    if isinstance(iterator, AsyncIterator):
+    if isinstance(iterator, AsyncIterable):
         return _achunk(iterator, max_size)
     return _chunk(iterator, max_size)
 
@@ -918,7 +1032,7 @@ def evaluate_annotation(
     cache: Dict[str, Any],
     *,
     implicit_str: bool = True,
-):
+) -> Any:
     if isinstance(tp, ForwardRef):
         tp = tp.__forward_arg__
         # ForwardRefs always evaluate their internals
@@ -927,9 +1041,9 @@ def evaluate_annotation(
     if implicit_str and isinstance(tp, str):
         if tp in cache:
             return cache[tp]
-        evaluated = eval(tp, globals, locals)
+        evaluated = evaluate_annotation(eval(tp, globals, locals), globals, locals, cache)
         cache[tp] = evaluated
-        return evaluate_annotation(evaluated, globals, locals, cache)
+        return evaluated
 
     if hasattr(tp, '__args__'):
         implicit_str = True
@@ -958,9 +1072,6 @@ def evaluate_annotation(
         if is_literal and not all(isinstance(x, (str, int, bool, type(None))) for x in evaluated_args):
             raise TypeError('Literal arguments must be of type str, int, bool, or NoneType.')
 
-        if evaluated_args == args:
-            return tp
-
         try:
             return tp.copy_with(evaluated_args)
         except AttributeError:
@@ -984,6 +1095,21 @@ def resolve_annotation(
     if cache is None:
         cache = {}
     return evaluate_annotation(annotation, globalns, locals, cache)
+
+
+def is_inside_class(func: Callable[..., Any]) -> bool:
+    # For methods defined in a class, the qualname has a dotted path
+    # denoting which class it belongs to. So, e.g. for A.foo the qualname
+    # would be A.foo while a global foo() would just be foo.
+    #
+    # Unfortunately, for nested functions this breaks. So inside an outer
+    # function named outer, those two would end up having a qualname with
+    # outer.<locals>.A.foo and outer.<locals>.foo
+
+    if func.__qualname__ == func.__name__:
+        return False
+    (remaining, _, _) = func.__qualname__.rpartition('.')
+    return not remaining.endswith('<locals>')
 
 
 TimestampStyle = Literal['f', 'F', 'd', 'D', 't', 'T', 'R']
@@ -1035,7 +1161,11 @@ def format_dt(dt: datetime.datetime, /, style: Optional[TimestampStyle] = None) 
 
 
 def set_target(
-    items: Iterable[ApplicationCommand], *, channel: Messageable = None, message: Message = None, user: Snowflake = None
+    items: Iterable[ApplicationCommand],
+    *,
+    channel: Optional[Messageable] = MISSING,
+    message: Optional[Message] = MISSING,
+    user: Optional[Snowflake] = MISSING,
 ) -> None:
     """A helper function to set the target for a list of items.
 
@@ -1046,26 +1176,28 @@ def set_target(
 
     Parameters
     -----------
-    items: Iterable[:class:`ApplicationCommand`]
+    items: Iterable[:class:`.abc.ApplicationCommand`]
         A list of items to set the target for.
-    channel: :class:`Messageable`
+    channel: Optional[:class:`.abc.Messageable`]
         The channel to target.
-    message: :class:`Message`
+    message: Optional[:class:`.Message`]
         The message to target.
-    user: :class:`Snowflake`
+    user: Optional[:class:`~discord.abc.Snowflake`]
         The user to target.
     """
-    attrs = {
-        'target_channel': channel,
-        'target_message': message,
-        'target_user': user,
-    }
+    attrs = {}
+    if channel is not MISSING:
+        attrs['target_channel'] = channel
+    if message is not MISSING:
+        attrs['target_message'] = message
+    if user is not MISSING:
+        attrs['target_user'] = user
 
     for item in items:
         for k, v in attrs.items():
             if v is not None:
                 try:
-                    setattr(item, k, v)  # type: ignore
+                    setattr(item, k, v)
                 except AttributeError:
                     pass
 
@@ -1074,37 +1206,8 @@ def _generate_session_id() -> str:
     return ''.join(random.choices(string.ascii_letters + string.digits, k=16))
 
 
-class ExpiringQueue(asyncio.Queue):  # Inspired from https://github.com/NoahCardoza/CaptchaHarvester
-    def __init__(self, timeout: int, maxsize: int = 0) -> None:
-        super().__init__(maxsize)
-        self.timeout = timeout
-        self.timers: asyncio.Queue = asyncio.Queue()
-
-    async def put(self, item: str) -> None:
-        thread: Timer = Timer(self.timeout, self.expire)
-        thread.start()
-        await self.timers.put(thread)
-        await super().put(item)
-
-    async def get(self, block: bool = True) -> str:
-        if block:
-            thread = await self.timers.get()
-        else:
-            thread = self.timers.get_nowait()
-        thread.cancel()
-        if block:
-            return await super().get()
-        else:
-            return self.get_nowait()
-
-    def expire(self) -> None:
-        try:
-            self._queue.popleft()
-        except:
-            pass
-
-    def to_list(self) -> List[str]:
-        return list(self._queue)
+def _generate_nonce() -> str:
+    return str(time_snowflake(utcnow()))
 
 
 class ExpiringString(collections.UserString):
@@ -1128,128 +1231,6 @@ class ExpiringString(collections.UserString):
     def destroy(self) -> None:
         self._destruct()
         self._timer.cancel()
-
-
-class Browser:  # Inspired from https://github.com/NoahCardoza/CaptchaHarvester
-    def __init__(self, browser: Union[BrowserEnum, str] = None) -> None:
-        if isinstance(browser, (BrowserEnum, type(None))):
-            try:
-                browser = self.get_browser(browser)
-            except Exception:
-                raise RuntimeError('Could not find browser. Please pass browser path manually.')
-
-        if browser is None:
-            raise RuntimeError('Could not find browser. Please pass browser path manually.')
-
-        self.browser: str = browser
-        self.proc: subprocess.Popen = MISSING
-
-    def get_mac_browser(pkg: str, binary: str) -> Optional[os.PathLike]:
-        import plistlib as plist
-        pfile: str = f'{os.environ["HOME"]}/Library/Preferences/{pkg}.plist'
-        if os.path.exists(pfile):
-            with open(pfile, 'rb') as f:
-                binary_path: Optional[str] = plist.load(f).get('LastRunAppBundlePath')
-            if binary_path is not None:
-                return os.path.join(binary_path, 'Contents', 'MacOS', binary)
-
-    def get_windows_browser(browser: str) -> Optional[str]:
-        import winreg as reg
-        reg_path: str = f'SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\{browser}.exe'
-        exe_path: Optional[str] = None
-        for install_type in reg.HKEY_CURRENT_USER, reg.HKEY_LOCAL_MACHINE:
-            try:
-                reg_key: str = reg.OpenKey(install_type, reg_path, 0, reg.KEY_READ)
-                exe_path: Optional[str] = reg.QueryValue(reg_key, None)
-                reg_key.Close()
-                if not os.path.isfile(exe_path):
-                    continue
-            except reg.WindowsError:
-                pass
-            else:
-                break
-        return exe_path
-
-    def get_linux_browser(browser: str) -> Optional[str]:
-        from shutil import which as exists
-        possibilities: List[str] = [browser + channel for channel in ('', '-beta', '-dev', '-developer', '-canary')]
-        for browser in possibilities:
-            if exists(browser):
-                return browser
-
-    registry: Dict[str, Dict[str, functools.partial]] = {
-        'Windows': {
-            'chrome': functools.partial(get_windows_browser, 'chrome'),
-            'chromium': functools.partial(get_windows_browser, 'chromium'),
-            'microsoft-edge': functools.partial(get_windows_browser, 'msedge'),
-            'opera': functools.partial(get_windows_browser, 'opera'),
-        },
-        'Darwin': {
-            'chrome': functools.partial(get_mac_browser, 'com.google.Chrome', 'Google Chrome'),
-            'chromium': functools.partial(get_mac_browser, 'org.chromium.Chromium', 'Chromium'),
-            'microsoft-edge': functools.partial(get_mac_browser, 'com.microsoft.Edge', 'Microsoft Edge'),
-            'opera': functools.partial(get_mac_browser, 'com.operasoftware.Opera', 'Opera'),
-        },
-        'Linux': {
-            'chrome': functools.partial(get_linux_browser, 'chrome'),
-            'chromium': functools.partial(get_linux_browser, 'chromium'),
-            'microsoft-edge': functools.partial(get_linux_browser, 'microsoft-edge'),
-            'opera': functools.partial(get_linux_browser, 'opera'),
-        }
-    }
-
-    def get_browser(self, browser: Optional[BrowserEnum] = None) -> Optional[str]:
-        if browser is not None:
-            return self.registry.get(platform.system(), {})[browser.value]()
-
-        for browser in self.registry.get(platform.system(), {}).values():
-            browser = browser()
-            if browser is not None:
-                return browser
-
-    @property
-    def running(self) -> bool:
-        try:
-            return self.proc.poll() is None
-        except:
-            return False
-
-    def launch(
-        self,
-        domain: Optional[str] = None,
-        server: Tuple[Optional[str], Optional[int]] = (None, None),
-        width: int = 400,
-        height: int = 500,
-        browser_args: List[str] = [],
-        extensions: Optional[str] = None
-    ) -> None:
-        browser_command: List[str] = [self.browser, *browser_args]
-
-        if extensions:
-            browser_command.append(f'--load-extension={extensions}')
-
-        browser_command.extend((
-            '--disable-default-apps',
-            '--no-default-browser-check',
-            '--no-check-default-browser',
-            '--no-first-run',
-            '--ignore-certificate-errors',
-            '--disable-background-networking',
-            '--disable-component-update',
-            '--disable-domain-reliability',
-            f'--user-data-dir={os.path.join(tempfile.TemporaryDirectory().name, "Profiles")}',
-            f'--host-rules=MAP {domain} {server[0]}:{server[1]}',
-            f'--window-size={width},{height}',
-            f'--app=https://{domain}'
-        ))
-
-        self.proc = subprocess.Popen(browser_command, stdout=-1, stderr=-1)
-
-    def stop(self) -> None:
-        try:
-            self.proc.terminate()
-        except:
-            pass
 
 
 async def _get_info(session: ClientSession) -> Tuple[str, str, int]:
@@ -1276,7 +1257,7 @@ async def _get_build_number(session: ClientSession) -> int:  # Thank you Discord
         build_request = await session.get(build_url, timeout=7)
         build_file = await build_request.text()
         build_index = build_file.find('buildNumber') + 24
-        return int(build_file[build_index:build_index + 6])
+        return int(build_file[build_index : build_index + 6])
     except asyncio.TimeoutError:
         _log.critical('Could not fetch client build number. Falling back to hardcoded value...')
         return 117300

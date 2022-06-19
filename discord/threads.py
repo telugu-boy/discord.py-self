@@ -25,13 +25,15 @@ DEALINGS IN THE SOFTWARE.
 from __future__ import annotations
 
 from typing import Callable, Dict, Iterable, List, Optional, Union, TYPE_CHECKING
+from datetime import datetime
 import asyncio
 import copy
 
 from .mixins import Hashable
-from .abc import Messageable
+from .abc import Messageable, _purge_helper
 from .enums import ChannelType, try_enum
 from .errors import ClientException, InvalidData
+from .flags import ChannelFlags
 from .utils import MISSING, parse_time, snowflake_time, _get_as_snowflake
 
 __all__ = (
@@ -41,6 +43,7 @@ __all__ = (
 
 if TYPE_CHECKING:
     from datetime import datetime
+    from typing_extensions import Self
 
     from .types.threads import (
         Thread as ThreadPayload,
@@ -49,7 +52,7 @@ if TYPE_CHECKING:
         ThreadArchiveDuration,
     )
     from .guild import Guild
-    from .channel import TextChannel, CategoryChannel
+    from .channel import TextChannel, CategoryChannel, ForumChannel
     from .member import Member
     from .message import Message, PartialMessage
     from .abc import Snowflake, SnowflakeTime
@@ -139,15 +142,16 @@ class Thread(Messageable, Hashable):
         'archive_timestamp',
         '_member_ids',
         '_created_at',
+        '_flags',
     )
 
-    def __init__(self, *, guild: Guild, state: ConnectionState, data: ThreadPayload):
+    def __init__(self, *, guild: Guild, state: ConnectionState, data: ThreadPayload) -> None:
         self._state: ConnectionState = state
-        self.guild = guild
+        self.guild: Guild = guild
         self._members: Dict[int, ThreadMember] = {}
         self._from_data(data)
 
-    async def _get_channel(self):
+    async def _get_channel(self) -> Self:
         return self
 
     def __repr__(self) -> str:
@@ -160,32 +164,26 @@ class Thread(Messageable, Hashable):
         return self.name
 
     def _from_data(self, data: ThreadPayload):
-        self.id = int(data['id'])
-        self.parent_id = int(data['parent_id'])
-        self.owner_id = int(data['owner_id'])
-        self.name = data['name']
-        self._type = try_enum(ChannelType, data['type'])
-        self.last_message_id = _get_as_snowflake(data, 'last_message_id')
-        self.slowmode_delay = data.get('rate_limit_per_user', 0)
-        self.message_count = data['message_count']
-        self.member_count = data['member_count']
-        self._member_ids = data['member_ids_preview']
+        self.id: int = int(data['id'])
+        self.parent_id: int = int(data['parent_id'])
+        self.owner_id: int = int(data['owner_id'])
+        self.name: str = data['name']
+        self._type: ChannelType = try_enum(ChannelType, data['type'])
+        self.last_message_id: Optional[int] = _get_as_snowflake(data, 'last_message_id')
+        self.slowmode_delay: int = data.get('rate_limit_per_user', 0)
+        self.message_count: int = data['message_count']
+        self.member_count: int = data['member_count']
+        self._member_ids: List[Union[str, int]] = data['member_ids_preview']
+        self._flags: int = data.get('flags', 0)
         self._unroll_metadata(data['thread_metadata'])
 
-        try:
-            member = data['member']
-        except KeyError:
-            pass
-        else:
-            self.me = ThreadMember(self, member)
-
     def _unroll_metadata(self, data: ThreadMetadata):
-        self.archived = data['archived']
-        self.auto_archive_duration = data['auto_archive_duration']
-        self.archive_timestamp = parse_time(data['archive_timestamp'])
-        self._created_at = parse_time(data.get('creation_timestamp'))
-        self.locked = data.get('locked', False)
-        self.invitable = data.get('invitable', True)
+        self.archived: bool = data['archived']
+        self.auto_archive_duration: int = data['auto_archive_duration']
+        self.archive_timestamp: datetime = parse_time(data['archive_timestamp'])
+        self.locked: bool = data.get('locked', False)
+        self.invitable: bool = data.get('invitable', True)
+        self._created_at: Optional[datetime] = parse_time(data.get('create_timestamp'))
 
     def _update(self, data):
         old = copy.copy(self)
@@ -215,20 +213,25 @@ class Thread(Messageable, Hashable):
         return self._type
 
     @property
-    def parent(self) -> Optional[TextChannel]:
-        """Optional[:class:`TextChannel`]: The parent channel this thread belongs to.
+    def parent(self) -> Optional[Union[TextChannel, ForumChannel]]:
+        """Optional[Union[:class:`ForumChannel`, :class:`TextChannel`]]: The parent channel this thread belongs to.
 
         There is an alias for this named :attr:`channel`.
         """
         return self.guild.get_channel(self.parent_id)  # type: ignore
 
     @property
-    def channel(self) -> Optional[TextChannel]:
-        """Optional[:class:`TextChannel`]: The parent channel this thread belongs to.
+    def channel(self) -> Optional[Union[TextChannel, ForumChannel]]:
+        """Optional[Union[:class:`ForumChannel`, :class:`TextChannel`]]: The parent channel this thread belongs to.
 
         This is an alias of :attr:`parent`.
         """
         return self.parent
+
+    @property
+    def flags(self) -> ChannelFlags:
+        """:class:`ChannelFlags`: The flags associated with this thread."""
+        return ChannelFlags._from_value(self._flags)
 
     @property
     def owner(self) -> Optional[Member]:
@@ -253,8 +256,7 @@ class Thread(Messageable, Hashable):
     def members(self) -> List[ThreadMember]:
         """List[:class:`ThreadMember`]: A list of thread members in this thread.
 
-        Initial members are not provided by Discord. You must call :func:`fetch_members`
-        or have thread subscribing enabled.
+        Initial members are not provided by Discord. You must call :func:`fetch_members`.
         """
         return list(self._members.values())
 
@@ -298,7 +300,7 @@ class Thread(Messageable, Hashable):
         if parent is None:
             raise ClientException('Parent channel not found')
         return parent.category
-    
+
     @property
     def category_id(self) -> Optional[int]:
         """The category channel ID the parent channel belongs to, if applicable.
@@ -325,8 +327,8 @@ class Thread(Messageable, Hashable):
 
         This might not be available.
         """
-        self_id = self._state.user.id
-        return self._members.get(self_id)
+        self_id = self._state.self_id
+        return self._members.get(self_id)  # type: ignore
 
     @me.setter
     def me(self, member) -> None:
@@ -389,7 +391,7 @@ class Thread(Messageable, Hashable):
             raise ClientException('Parent channel not found')
         return parent.permissions_for(obj)
 
-    async def delete_messages(self, messages: Iterable[Snowflake]) -> None:
+    async def delete_messages(self, messages: Iterable[Snowflake], /, *, reason: Optional[str] = None) -> None:
         """|coro|
 
         Deletes a list of messages. This is similar to :meth:`Message.delete`
@@ -407,6 +409,8 @@ class Thread(Messageable, Hashable):
         -----------
         messages: Iterable[:class:`abc.Snowflake`]
             An iterable of messages denoting which ones to bulk delete.
+        reason: Optional[:class:`str`]
+            The reason for deleting the messages. Shows up on the audit log.
 
         Raises
         ------
@@ -421,7 +425,7 @@ class Thread(Messageable, Hashable):
         if len(messages) == 0:
             return  # Do nothing
 
-        await self._state._delete_messages(self.id, messages)
+        await self._state._delete_messages(self.id, messages, reason=reason)
 
     async def purge(
         self,
@@ -432,6 +436,7 @@ class Thread(Messageable, Hashable):
         after: Optional[SnowflakeTime] = None,
         around: Optional[SnowflakeTime] = None,
         oldest_first: Optional[bool] = False,
+        reason: Optional[str] = None,
     ) -> List[Message]:
         """|coro|
 
@@ -469,6 +474,8 @@ class Thread(Messageable, Hashable):
             Same as ``around`` in :meth:`history`.
         oldest_first: Optional[:class:`bool`]
             Same as ``oldest_first`` in :meth:`history`.
+        reason: Optional[:class:`str`]
+            The reason for purging the messages. Shows up on the audit log.
 
         Raises
         -------
@@ -482,32 +489,16 @@ class Thread(Messageable, Hashable):
         List[:class:`.Message`]
             The list of messages that were deleted.
         """
-        if check is MISSING:
-            check = lambda m: True
-
-        state = self._state
-        channel_id = self.id
-        iterator = self.history(limit=limit, before=before, after=after, oldest_first=oldest_first, around=around)
-        ret: List[Message] = []
-        count = 0
-
-        async for message in iterator:
-            if count == 50:
-                to_delete = ret[-50:]
-                await state._delete_messages(channel_id, to_delete)
-                count = 0
-
-            if not check(message):
-                continue
-
-            count += 1
-            ret.append(message)
-
-        # Some messages remaining to poll
-        to_delete = ret[-count:]
-        await state._delete_messages(channel_id, to_delete)
-
-        return ret
+        return await _purge_helper(
+            self,
+            limit=limit,
+            check=check,
+            before=before,
+            after=after,
+            around=around,
+            oldest_first=oldest_first,
+            reason=reason,
+        )
 
     async def edit(
         self,
@@ -516,6 +507,7 @@ class Thread(Messageable, Hashable):
         archived: bool = MISSING,
         locked: bool = MISSING,
         invitable: bool = MISSING,
+        pinned: bool = MISSING,
         slowmode_delay: int = MISSING,
         auto_archive_duration: ThreadArchiveDuration = MISSING,
         reason: Optional[str] = None,
@@ -539,6 +531,8 @@ class Thread(Messageable, Hashable):
             Whether to archive the thread or not.
         locked: :class:`bool`
             Whether to lock the thread or not.
+        pinned: :class:`bool`
+            Whether to pin the thread or not. This only works if the thread is part of a forum.
         invitable: :class:`bool`
             Whether non-moderators can add other non-moderators to this thread.
             Only available for private threads.
@@ -549,7 +543,7 @@ class Thread(Messageable, Hashable):
             Specifies the slowmode rate limit for user in this thread, in seconds.
             A value of ``0`` disables slowmode. The maximum value possible is ``21600``.
         reason: Optional[:class:`str`]
-            The reason for editing the thread. Shows up on the audit log.
+            The reason for editing this thread. Shows up on the audit log.
 
         Raises
         -------
@@ -576,12 +570,16 @@ class Thread(Messageable, Hashable):
             payload['invitable'] = invitable
         if slowmode_delay is not MISSING:
             payload['rate_limit_per_user'] = slowmode_delay
+        if pinned is not MISSING:
+            flags = self.flags
+            flags.pinned = pinned
+            payload['flags'] = flags.value
 
         data = await self._state.http.edit_channel(self.id, **payload, reason=reason)
         # The data payload will always be a Thread payload
         return Thread(data=data, state=self._state, guild=self.guild)  # type: ignore
 
-    async def join(self):
+    async def join(self) -> None:
         """|coro|
 
         Joins this thread.
@@ -598,7 +596,7 @@ class Thread(Messageable, Hashable):
         """
         await self._state.http.join_thread(self.id)
 
-    async def leave(self):
+    async def leave(self) -> None:
         """|coro|
 
         Leaves this thread.
@@ -610,14 +608,13 @@ class Thread(Messageable, Hashable):
         """
         await self._state.http.leave_thread(self.id)
 
-    async def add_user(self, user: Snowflake):
+    async def add_user(self, user: Snowflake, /) -> None:
         """|coro|
 
         Adds a user to this thread.
 
-        You must have :attr:`~Permissions.send_messages` and :attr:`~Permissions.use_threads`
-        to add a user to a public thread. If the thread is private then :attr:`~Permissions.send_messages`
-        and either :attr:`~Permissions.use_private_threads` or :attr:`~Permissions.manage_messages`
+        You must have :attr:`~Permissions.send_messages_in_threads` to add a user to a thread.
+        If the thread is private then and :attr:`invitable` is ``False`` then :attr:`~Permissions.manage_messages`
         is required to add a user to the thread.
 
         Parameters
@@ -634,7 +631,7 @@ class Thread(Messageable, Hashable):
         """
         await self._state.http.add_user_to_thread(self.id, user.id)
 
-    async def remove_user(self, user: Snowflake):
+    async def remove_user(self, user: Snowflake, /) -> None:
         """|coro|
 
         Removes a user from this thread.
@@ -679,13 +676,13 @@ class Thread(Messageable, Hashable):
         except asyncio.TimeoutError as exc:
             raise InvalidData('Didn\'t receieve a response from Discord') from exc
 
-        members = [ThreadMember(self, {'member': member}) for member in data['members']]
+        members = [ThreadMember(self, {'member': member}) for member in data['members']]  # type: ignore
         for m in members:
             self._add_member(m)
 
         return self.members  # Includes correct self.me
 
-    async def delete(self):
+    async def delete(self) -> None:
         """|coro|
 
         Deletes this thread.
@@ -777,23 +774,24 @@ class ThreadMember(Hashable):
         'parent',
     )
 
-    def __init__(self, parent: Thread, data: ThreadMemberPayload):
-        self.parent = parent
-        self._state = parent._state
+    def __init__(self, parent: Thread, data: ThreadMemberPayload) -> None:
+        self.parent: Thread = parent
+        self._state: ConnectionState = parent._state
         self._from_data(data)
 
     def __repr__(self) -> str:
         return f'<ThreadMember id={self.id} thread_id={self.thread_id} joined_at={self.joined_at!r}>'
 
-    def _from_data(self, data: ThreadMemberPayload):
+    def _from_data(self, data: ThreadMemberPayload) -> None:
         state = self._state
 
+        self.id: int
         try:
             self.id = int(data['user_id'])
         except KeyError:
-            assert state.self_id is not None
-            self.id = state.self_id
+            self.id = state.self_id  # type: ignore
 
+        self.thread_id: int
         try:
             self.thread_id = int(data['id'])
         except KeyError:
@@ -803,7 +801,7 @@ class ThreadMember(Hashable):
         self.flags = data.get('flags')
 
         if (mdata := data.get('member')) is not None:
-            guild = self.parent.parent.guild  # type: ignore
+            guild = self.parent.guild
             mdata['guild_id'] = guild.id
             self.id = user_id = int(data['user_id'])
             mdata['presence'] = data.get('presence')
@@ -822,4 +820,4 @@ class ThreadMember(Hashable):
         """Optional[:class:`Member`]: The member this :class:`ThreadMember` represents. If the member
         is not cached then this will be ``None``.
         """
-        return self.parent.parent.guild.get_member(self.id)  # type: ignore
+        return self.parent.guild.get_member(self.id)
