@@ -341,7 +341,8 @@ class MemberSidebar:
             def predicate(data):
                 return int(data['guild_id']) == guild.id and any(op['op'] == 'SYNC' for op in data['ops'])
 
-            await ws.request_lazy_guild(guild.id, channels=requests)
+            # Good to have to scrape more members, duplicates are filtered out via set
+            await ws.request_lazy_guild(guild.id, channels=requests, typing=True, threads=True, activities=True)
 
             try:
                 await asyncio.wait_for(ws.wait_for('GUILD_MEMBER_LIST_UPDATE', predicate), timeout=15)
